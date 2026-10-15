@@ -275,6 +275,44 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
     and upload. Tick <em>Unlimited</em> (or set 0) to remove the limit. 1000 kbps = 1 Mbit/s.</p>
 </div>"""
 
+    users = common.list_users()
+    if users:
+        urows = "".join(
+            f'<tr><td class="mono">{esc(u["email"])}</td>'
+            f'<td>{esc(u.get("label") or "")}</td>'
+            f'<td>{esc(u.get("last_login_at") or "&mdash;")}</td>'
+            f'<td><form method="post" action="/users/delete" style="display:inline">'
+            f'<input type="hidden" name="email" value="{esc(u["email"])}">'
+            f'<button class="btn btn-danger btn-sm" type="submit">Delete</button></form></td></tr>'
+            for u in users
+        )
+    else:
+        urows = ('<tr><td colspan="4" class="muted" style="padding:1.25rem .5rem">'
+                 'No accounts yet. Sign-in is impossible until you add one.</td></tr>')
+
+    users_card = f"""
+<div class="card" style="margin-bottom:1.25rem">
+  <h2 class="section-title">Wi-Fi accounts</h2>
+  <form method="post" action="/users">
+    <div class="grid">
+      <div><label class="label" for="u-email">Email</label>
+        <input class="input" type="email" id="u-email" name="email" placeholder="you@example.com" required></div>
+      <div><label class="label" for="u-label">Label</label>
+        <input class="input" type="text" id="u-label" name="label" placeholder="Ms Chan"></div>
+      <div><label class="label" for="u-pass">Password (min 8)</label>
+        <input class="input" type="text" id="u-pass" name="password" autocomplete="new-password" required></div>
+      <div><button class="btn btn-primary btn-block" type="submit">Save account</button></div>
+    </div>
+  </form>
+  <p class="note" style="text-align:left">Saving an email that already exists resets its password.</p>
+  <div class="overflow" style="margin-top:1rem">
+    <table>
+      <thead><tr><th>Email</th><th>Label</th><th>Last sign-in</th><th></th></tr></thead>
+      <tbody>{urows}</tbody>
+    </table>
+  </div>
+</div>"""
+
     if not all_macs:
         rows = ('<tr><td colspan="7" class="muted" style="padding:1.5rem .5rem">'
                 'No devices yet. They appear here once a client takes a DHCP lease, '
@@ -372,6 +410,7 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
     <nav>
       <a href="#overview" class="on">Overview</a>
       <a href="#add">Add device</a>
+      <a href="#users">Accounts</a>
       <a href="#devices">Devices</a>
     </nav>
   </aside>
@@ -379,6 +418,7 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
     {top}
     <div id="overview">{stats}</div>
     <div id="add">{add_form}</div>
+    <div id="users">{users_card}</div>
     <div id="devices">{table}</div>
   </div>
 </div>"""
@@ -537,6 +577,25 @@ async def delete(mac: str = Form("")):
 # --------------------------------------------------------------------------- #
 # JSON API (same WAN-only restriction)
 # --------------------------------------------------------------------------- #
+@app.post("/users")
+async def save_user(request: Request, email: str = Form(""), password: str = Form(""), label: str = Form("")):
+    if not session_valid(request):
+        return RedirectResponse("/login", status_code=303)
+    try:
+        common.create_user(email, password, label.strip())
+    except ValueError as exc:
+        return HTMLResponse(render_dashboard(warn=f"User not saved: {exc}"), status_code=400)
+    return RedirectResponse(f"/?msg={esc(f'{common.normalise_email(email)} saved')}", status_code=303)
+
+
+@app.post("/users/delete")
+async def delete_user_route(request: Request, email: str = Form("")):
+    if not session_valid(request):
+        return RedirectResponse("/login", status_code=303)
+    common.delete_user(email)
+    return RedirectResponse(f"/?msg={esc(f'{common.normalise_email(email)} deleted')}", status_code=303)
+
+
 @app.get("/api/devices")
 async def api_devices() -> JSONResponse:
     devices = {d["mac"]: d for d in common.list_devices()}

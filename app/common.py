@@ -102,6 +102,17 @@ def db_init() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                email         TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                label         TEXT NOT NULL DEFAULT '',
+                created_at    TEXT NOT NULL,
+                last_login_at TEXT
+            )
+            """
+        )
         conn.commit()
 
 
@@ -148,6 +159,98 @@ def delete_device(mac: str) -> None:
     with db_connect() as conn:
         conn.execute("DELETE FROM devices WHERE mac=?", (mac,))
         conn.commit()
+
+
+# --------------------------------------------------------------------------- #
+# Local accounts (email + password)
+#
+# Email is the natural key so a later Microsoft/OIDC sign-in can link to an
+# existing account by verified email without duplicating users.
+# --------------------------------------------------------------------------- #
+PBKDF2_ROUNDS = 200_000
+
+
+def _hash_password(password: str) -> str:
+    salt = os.urandom(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PBKDF2_ROUNDS)
+    return f"pbkdf2_sha256${PBKDF2_ROUNDS}${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str) -> bool:
+    try:
+        scheme, rounds, salt_hex, digest_hex = (stored or "").split("$")
+        if scheme != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), bytes.fromhex(salt_hex), int(rounds)
+        )
+        return hmac.compare_digest(digest.hex(), digest_hex)
+    except Exception:
+        return False
+
+
+def normalise_email(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def create_user(email: str, password: str, label: str = "") -> Dict:
+    email = normalise_email(email)
+    if not email or "@" not in email:
+        raise ValueError(f"Invalid email address: {email!r}")
+    if not password or len(password) < 8:
+        raise ValueError("Password must be at least 8 characters")
+    now = _now()
+    with db_connect() as conn:
+        conn.execute(
+            "INSERT INTO users (email,password_hash,label,created_at) VALUES (?,?,?,?)"
+            " ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,"
+            " label=excluded.label",
+            (email, _hash_password(password), label, now),
+        )
+        conn.commit()
+    return get_user(email)  # type: ignore[return-value]
+
+
+def set_user_password(email: str, password: str) -> None:
+    email = normalise_email(email)
+    if not password or len(password) < 8:
+        raise ValueError("Password must be at least 8 characters")
+    with db_connect() as conn:
+        conn.execute("UPDATE users SET password_hash=? WHERE email=?", (_hash_password(password), email))
+        conn.commit()
+
+
+def get_user(email: str) -> Optional[Dict]:
+    email = normalise_email(email)
+    with db_connect() as conn:
+        row = conn.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
+        return dict(row) if row else None
+
+
+def list_users() -> List[Dict]:
+    with db_connect() as conn:
+        rows = conn.execute("SELECT * FROM users ORDER BY email").fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_user(email: str) -> None:
+    email = normalise_email(email)
+    with db_connect() as conn:
+        conn.execute("DELETE FROM users WHERE email=?", (email,))
+        conn.commit()
+
+
+def verify_user(email: str, password: str) -> Optional[Dict]:
+    """Return the user record when the password matches, else None."""
+    user = get_user(email)
+    if not user or not verify_password(password, user["password_hash"]):
+        return None
+    with db_connect() as conn:
+        conn.execute(
+            "UPDATE users SET last_login_at=? WHERE email=?", (_now(), user["email"])
+        )
+        conn.commit()
+    return user
 
 
 # --------------------------------------------------------------------------- #

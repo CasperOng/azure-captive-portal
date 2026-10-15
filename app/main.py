@@ -13,7 +13,7 @@ from typing import Optional, Tuple
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 import common
@@ -22,6 +22,22 @@ ENV_PATH = Path("/opt/captive-portal/.env")
 LOG_PATH = Path("/var/log/captive-auth.log")
 
 app = FastAPI(title="Captive Portal - Microsoft Entra ID (OAuth2)")
+
+# Simple in-memory brute-force throttle for the local email/password form.
+_LOGIN_FAILURES: dict = {}
+MAX_LOGIN_FAILURES = 6
+LOGIN_FAILURE_WINDOW = 300
+
+
+def _login_locked(ip: str) -> bool:
+    now = time.time()
+    fails = [t for t in _LOGIN_FAILURES.get(ip, []) if now - t < LOGIN_FAILURE_WINDOW]
+    _LOGIN_FAILURES[ip] = fails
+    return len(fails) >= MAX_LOGIN_FAILURES
+
+
+def _login_record_failure(ip: str) -> None:
+    _LOGIN_FAILURES.setdefault(ip, []).append(time.time())
 
 
 def get_config() -> dict:
@@ -242,8 +258,18 @@ def render_login_html(ip: str, mac: str, authorized: bool = False, error: str = 
             <span class="detail-value">10.50.0.0/24</span>
           </div>
         </div>
-        <a href="/auth/login" class="btn btn-primary btn-block">
-          <span class="ms-chip">{common.microsoft_mark()}</span>
+        <form method="post" action="/login" style="margin-top:1.25rem">
+          <label class="label" for="email">School email</label>
+          <input class="input" type="email" id="email" name="email"
+                 autocomplete="username" placeholder="you@example.com" required>
+          <label class="label" for="password" style="margin-top:.85rem">Password</label>
+          <input class="input" type="password" id="password" name="password"
+                 autocomplete="current-password" required>
+          <button class="btn btn-primary btn-block" type="submit" style="margin-top:1rem">Sign in</button>
+        </form>
+        <div class="divider"><span>or</span></div>
+        <a href="/auth/login" class="btn btn-secondary btn-block">
+          {common.microsoft_mark()}
           Sign in with Microsoft
         </a>
         {session_block}
@@ -363,6 +389,46 @@ async def portal_login_page(request: Request, error: str = ""):
         error=error,
     )
     return HTMLResponse(content=html, status_code=200)
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def portal_login_submit(request: Request, email: str = Form(""), password: str = Form("")):
+    client_ip = request.client.host if request.client else "unknown"
+    mac = get_client_mac(client_ip) or "00:00:00:00:00:00"
+
+    if _login_locked(client_ip):
+        return HTMLResponse(
+            render_login_html(
+                ip=client_ip, mac=mac,
+                error="Too many failed attempts. Try again in a few minutes.",
+            ),
+            status_code=429,
+        )
+
+    user = common.verify_user(email, password)
+    if not user:
+        _login_record_failure(client_ip)
+        return HTMLResponse(
+            render_login_html(ip=client_ip, mac=mac, error="Incorrect email or password."),
+            status_code=401,
+        )
+
+    if not common.valid_mac(mac) or mac == "00:00:00:00:00:00":
+        raise HTTPException(status_code=400, detail=f"Cannot authorize invalid MAC address: {mac}")
+
+    if not authorize_mac(mac):
+        raise HTTPException(status_code=500, detail="Failed to add MAC to nftables authorized_macs set.")
+
+    log_auth_event(client_ip, mac, user["email"], user.get("label") or user["email"], "LOCAL_PASSWORD")
+    return HTMLResponse(
+        render_welcome_html(
+            name=user.get("label") or user["email"],
+            username=user["email"],
+            ip=client_ip,
+            mac=mac,
+            method="Email and password",
+        )
+    )
 
 
 @app.get("/auth/login")
