@@ -14,7 +14,7 @@ from typing import Optional, Tuple
 import httpx
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 import common
 
@@ -32,7 +32,6 @@ def get_config() -> dict:
         "AZURE_CLIENT_SECRET": os.getenv("AZURE_CLIENT_SECRET", ""),
         "REDIRECT_URI": os.getenv("REDIRECT_URI", "http://localhost:3000/auth/callback"),
         "SESSION_SECRET": os.getenv("SESSION_SECRET", "default-fallback-secret-change-me"),
-        "DEMO_BYPASS_MODE": os.getenv("DEMO_BYPASS_MODE", "true").lower() in ("true", "1", "yes"),
     }
 
 
@@ -165,7 +164,7 @@ def decode_jwt_claims(token: str) -> dict:
         return {}
 
 
-def render_login_html(ip: str, mac: str, demo_mode: bool, authorized: bool = False, error: str = "") -> str:
+def render_login_html(ip: str, mac: str, authorized: bool = False, error: str = "") -> str:
     e = common.esc
     status_badge = (
         '<span class="badge badge-green">Authorized &middot; 8h active</span>'
@@ -178,15 +177,28 @@ def render_login_html(ip: str, mac: str, demo_mode: bool, authorized: bool = Fal
         else ""
     )
 
-    demo_block = ""
-    if demo_mode:
-        demo_block = f"""
-        <div class="divider"><span>Testing &amp; pre-production</span></div>
-        <a href="/auth/demo?mac={urllib.parse.quote(mac)}&amp;ip={urllib.parse.quote(ip)}" class="btn btn-secondary btn-block">
-          1-Click Demo Authorize
-        </a>
-        <p class="note">DEMO_BYPASS_MODE is enabled in <code>/opt/captive-portal/.env</code>.</p>
-        """
+    session_block = ""
+    if authorized:
+        sess = common.session_summary(mac)
+        session_block = f"""
+        <div class="detail-panel">
+          <div class="detail-row">
+            <span class="detail-label">Connected for</span>
+            <span class="detail-value">{e(sess["connected_human"])}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Data used</span>
+            <span class="detail-value">{e(sess["bytes_human"])}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Down / Up</span>
+            <span class="detail-value">{e(sess["down_human"])} / {e(sess["up_human"])}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Session ends in</span>
+            <span class="detail-value">{e(sess["remaining_human"])}</span>
+          </div>
+        </div>"""
 
     body = f"""
 <div class="auth">
@@ -194,20 +206,21 @@ def render_login_html(ip: str, mac: str, demo_mode: bool, authorized: bool = Fal
     <div class="glow glow-1" aria-hidden="true"></div>
     <div class="glow glow-2" aria-hidden="true"></div>
     <div class="auth-aside-inner">
-      <span class="crest">SSO</span>
+      <span class="crest"><img src="/brand/logo.svg" alt="School crest"></span>
       <h1>Campus Wi-Fi</h1>
-      <p class="sub">Sign in with your school Microsoft account to get online. This device is remembered for eight hours.</p>
-      <p class="accent">Microsoft Entra ID &middot; single sign-on</p>
+      <p class="sub">Example Secondary School<br>
+        <span class="zh">示例中學</span></p>
+      <p class="accent">Sign in with your school account to get online</p>
     </div>
   </aside>
   <div class="auth-main">
     <main>
       <div class="auth-brand-mobile">
         <div class="row">
-          <span class="crest-sm">SSO</span>
+          <span class="crest-sm"><img src="/brand/logo.svg" alt=""></span>
           <h1>Campus Wi-Fi</h1>
         </div>
-        <p class="event">Microsoft Entra ID &middot; single sign-on</p>
+        <p class="event">Example Secondary School</p>
       </div>
       <div class="card auth-card">
         <h2>Sign in</h2>
@@ -233,7 +246,7 @@ def render_login_html(ip: str, mac: str, demo_mode: bool, authorized: bool = Fal
           <span class="ms-chip">{common.microsoft_mark()}</span>
           Sign in with Microsoft
         </a>
-        {demo_block}
+        {session_block}
       </div>
     </main>
     {common.credit_html()}
@@ -244,6 +257,7 @@ def render_login_html(ip: str, mac: str, demo_mode: bool, authorized: bool = Fal
 
 def render_welcome_html(name: str, username: str, ip: str, mac: str, method: str) -> str:
     e = common.esc
+    sess = common.session_summary(mac)
     body = f"""
 <div class="auth">
   <aside class="auth-aside">
@@ -290,6 +304,18 @@ def render_welcome_html(name: str, username: str, ip: str, mac: str, method: str
             <span class="detail-label">Session lease</span>
             <span class="detail-value">8 hours</span>
           </div>
+          <div class="detail-row">
+            <span class="detail-label">Connected for</span>
+            <span class="detail-value">{e(sess["connected_human"])}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Data used</span>
+            <span class="detail-value">{e(sess["bytes_human"])}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">Down / Up</span>
+            <span class="detail-value">{e(sess["down_human"])} / {e(sess["up_human"])}</span>
+          </div>
         </div>
       </div>
     </main>
@@ -297,6 +323,14 @@ def render_welcome_html(name: str, username: str, ip: str, mac: str, method: str
   </div>
 </div>"""
     return common.page_shell("Connected", body, wrap=False, credit=False)
+
+
+@app.get("/brand/{name}")
+async def brand_asset(name: str):
+    path = common.brand_file(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(path, media_type=common.brand_media_type(name))
 
 
 @app.get("/api/capport")
@@ -325,43 +359,10 @@ async def portal_login_page(request: Request, error: str = ""):
     html = render_login_html(
         ip=client_ip,
         mac=mac,
-        demo_mode=cfg["DEMO_BYPASS_MODE"],
         authorized=authorized,
         error=error,
     )
     return HTMLResponse(content=html, status_code=200)
-
-
-@app.get("/auth/demo", response_class=HTMLResponse)
-async def auth_demo_bypass(request: Request, mac: Optional[str] = None, ip: Optional[str] = None):
-    cfg = get_config()
-    if not cfg["DEMO_BYPASS_MODE"]:
-        raise HTTPException(status_code=403, detail="Demo bypass mode is disabled.")
-
-    client_ip = ip or (request.client.host if request.client else "unknown")
-    resolved_mac = get_client_mac(client_ip) or mac or "00:00:00:00:00:00"
-    if resolved_mac == "00:00:00:00:00:00" or not MAC_RE.match(resolved_mac):
-        return HTMLResponse(
-            render_login_html(
-                ip=client_ip,
-                mac=resolved_mac,
-                demo_mode=True,
-                error="Could not resolve a valid client MAC address from ARP/neighbor table on eth1.",
-            ),
-            status_code=400,
-        )
-
-    authorize_mac(resolved_mac)
-    log_auth_event(client_ip, resolved_mac, "demo@school.local", "Demo User", "DEMO_BYPASS")
-    return HTMLResponse(
-        render_welcome_html(
-            name="Demo User",
-            username="demo@school.local",
-            ip=client_ip,
-            mac=resolved_mac,
-            method="1-Click Demo Bypass",
-        )
-    )
 
 
 @app.get("/auth/login")
@@ -401,8 +402,7 @@ async def auth_callback(
             render_login_html(
                 ip=req_ip,
                 mac=get_client_mac(req_ip) or "00:00:00:00:00:00",
-                demo_mode=cfg["DEMO_BYPASS_MODE"],
-                error=msg,
+                        error=msg,
             ),
             status_code=400,
         )
@@ -439,8 +439,7 @@ async def auth_callback(
             render_login_html(
                 ip=client_ip,
                 mac=mac,
-                demo_mode=cfg["DEMO_BYPASS_MODE"],
-                error=f"Token exchange failed ({resp.status_code}): {resp.text}",
+                        error=f"Token exchange failed ({resp.status_code}): {resp.text}",
             ),
             status_code=400,
         )

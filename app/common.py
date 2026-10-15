@@ -29,6 +29,35 @@ AUTH_SET = "authorized_macs"
 # authorized_macs elements carry this timeout; connected time is derived from it.
 SESSION_SECONDS = 8 * 3600
 
+# Static brand assets (school crest, signature) served by both apps.
+BRAND_DIR = Path(os.getenv("PORTAL_BRAND_DIR", "/opt/captive-portal/brand"))
+
+
+def brand_media_type(name: str) -> str:
+    lowered = name.lower()
+    if lowered.endswith(".png"):
+        return "image/png"
+    if lowered.endswith(".svg"):
+        return "image/svg+xml"
+    if lowered.endswith(".ico"):
+        return "image/x-icon"
+    if lowered.endswith(".jpg") or lowered.endswith(".jpeg"):
+        return "image/jpeg"
+    return "application/octet-stream"
+
+
+def brand_file(name: str) -> Optional[Path]:
+    """Resolve a brand asset safely (no path traversal). None if missing."""
+    safe = re.sub(r"[^A-Za-z0-9._-]", "", name or "")
+    if not safe:
+        return None
+    candidate = (BRAND_DIR / safe).resolve()
+    try:
+        candidate.relative_to(BRAND_DIR.resolve())
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 
 # Sentinel stored in the DB / returned by the API to mean "no rate limit".
@@ -300,6 +329,32 @@ def session_remaining(mac: str) -> Optional[int]:
     return None
 
 
+def session_summary(mac: str) -> Dict[str, object]:
+    """Everything the UI needs about a device's current session.
+
+    Returns zeros/inactive when the MAC is not currently authorized.
+    """
+    mac = (mac or "").lower().strip()
+    remaining = session_remaining(mac)
+    acct = read_acct(mac)
+    active = remaining is not None
+    connected = max(0, SESSION_SECONDS - remaining) if active and remaining is not None else 0
+    return {
+        "mac": mac,
+        "active": active,
+        "connected_seconds": connected,
+        "remaining_seconds": remaining or 0,
+        "connected_human": fmt_duration(connected),
+        "remaining_human": fmt_duration(remaining or 0),
+        "bytes": acct["bytes"],
+        "up_bytes": acct["up_bytes"],
+        "down_bytes": acct["down_bytes"],
+        "bytes_human": fmt_bytes(acct["bytes"]),
+        "up_human": fmt_bytes(acct["up_bytes"]),
+        "down_human": fmt_bytes(acct["down_bytes"]),
+    }
+
+
 def fmt_bytes(n: int) -> str:
     step = 1000.0
     value = float(n)
@@ -554,7 +609,10 @@ tbody tr:last-child td{border-bottom:0}
 .auth-aside-inner{position:relative}
 .crest{display:grid;place-items:center;width:5rem;height:5rem;border-radius:24px;
   background:#fff;color:var(--brand-ink);font-weight:800;font-size:1.25rem;
-  letter-spacing:-.02em;box-shadow:var(--shadow-lift)}
+  letter-spacing:-.02em;box-shadow:var(--shadow-lift);overflow:hidden}
+.crest img{width:78%;height:78%;object-fit:contain;display:block}
+.crest-sm img{width:74%;height:74%;object-fit:contain;display:block}
+.zh{font-size:.85em;opacity:.7;letter-spacing:0}
 .auth-aside h1{margin-top:2rem;font-size:2.5rem;line-height:1.05;font-weight:700;color:#fff}
 .auth-aside .sub{margin-top:1rem;max-width:24rem;color:rgba(255,255,255,.6);
   font-size:1rem;line-height:1.6}
