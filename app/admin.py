@@ -135,112 +135,78 @@ def esc(value: object) -> str:
     return html.escape(str(value if value is not None else ""))
 
 
-BASE_CSS = """
-:root {
-  --bg:#0f172a; --card:#1e293b; --border:#334155; --text:#f8fafc; --muted:#94a3b8;
-  --accent:#3b82f6; --accent-hover:#2563eb; --green:#10b981; --red:#ef4444; --amber:#f59e0b;
-}
-* { box-sizing:border-box; margin:0; padding:0; }
-body {
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
-  background:radial-gradient(circle at top,#1e293b 0%,#0f172a 100%);
-  color:var(--text); min-height:100vh; padding:2rem 1.25rem; line-height:1.5;
-}
-.wrap { max-width:1080px; margin:0 auto; }
-h1 { font-size:1.5rem; letter-spacing:-0.02em; }
-h2 { font-size:1.05rem; margin-bottom:1rem; }
-.sub { color:var(--muted); font-size:0.875rem; }
-.card {
-  background:var(--card); border:1px solid var(--border); border-radius:14px;
-  padding:1.5rem; margin-bottom:1.25rem; box-shadow:0 10px 30px rgba(0,0,0,0.35);
-}
-.top { display:flex; justify-content:space-between; align-items:center; gap:1rem; margin-bottom:1.5rem; flex-wrap:wrap; }
-.stats { display:flex; gap:0.75rem; flex-wrap:wrap; margin-bottom:1.25rem; }
-.stat {
-  flex:1 1 150px; background:var(--card); border:1px solid var(--border);
-  border-radius:12px; padding:0.9rem 1.1rem;
-}
-.stat .k { color:var(--muted); font-size:0.75rem; text-transform:uppercase; letter-spacing:0.06em; }
-.stat .v { font-size:1.5rem; font-weight:700; margin-top:0.15rem; }
-label { display:block; font-size:0.8rem; color:var(--muted); margin-bottom:0.3rem; }
-input[type=text], input[type=password], input[type=number] {
-  width:100%; padding:0.6rem 0.75rem; border-radius:9px; border:1px solid var(--border);
-  background:#0f172a; color:var(--text); font-size:0.9rem;
-}
-input:focus { outline:2px solid var(--accent); outline-offset:-1px; }
-.btn {
-  display:inline-flex; align-items:center; justify-content:center; gap:0.4rem;
-  padding:0.6rem 1rem; border-radius:9px; border:none; cursor:pointer;
-  font-size:0.875rem; font-weight:600; background:var(--accent); color:#fff;
-  text-decoration:none; white-space:nowrap;
-}
-.btn:hover { background:var(--accent-hover); }
-.btn-sm { padding:0.4rem 0.7rem; font-size:0.8rem; }
-.btn-ghost { background:transparent; border:1px solid var(--border); color:var(--text); }
-.btn-ghost:hover { background:#0f172a; }
-.btn-green { background:var(--green); } .btn-green:hover { background:#059669; }
-.btn-red { background:var(--red); } .btn-red:hover { background:#dc2626; }
-.grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:1rem; align-items:end; }
-table { width:100%; border-collapse:collapse; font-size:0.875rem; }
-th {
-  text-align:left; color:var(--muted); font-size:0.72rem; text-transform:uppercase;
-  letter-spacing:0.06em; padding:0.6rem 0.5rem; border-bottom:1px solid var(--border);
-}
-td { padding:0.7rem 0.5rem; border-bottom:1px solid rgba(51,65,85,0.5); vertical-align:middle; }
-tr:last-child td { border-bottom:none; }
-.mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:0.82rem; }
-.badge { font-size:0.72rem; padding:0.15rem 0.55rem; border-radius:9999px; font-weight:600; white-space:nowrap; }
-.b-ok { background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.3); }
-.b-no { background:rgba(148,163,184,0.12); color:#94a3b8; border:1px solid rgba(148,163,184,0.25); }
-.b-lim { background:rgba(59,130,246,0.15); color:#60a5fa; border:1px solid rgba(59,130,246,0.3); }
-.b-unl { background:rgba(245,158,11,0.12); color:#fbbf24; border:1px solid rgba(245,158,11,0.28); }
-.rowform { display:flex; gap:0.4rem; align-items:center; flex-wrap:wrap; }
-.rowform input[type=number] { width:92px; }
-.rowform input[type=text] { width:150px; }
-.ck { display:flex; align-items:center; gap:0.35rem; color:var(--muted); font-size:0.78rem; white-space:nowrap; }
-.ck input { width:auto; }
-.alert { padding:0.7rem 1rem; border-radius:10px; font-size:0.85rem; margin-bottom:1rem; }
-.a-ok { background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.35); color:#6ee7b7; }
-.a-err { background:rgba(239,68,68,0.12); border:1px solid rgba(239,68,68,0.35); color:#fca5a5; }
-.note { color:var(--muted); font-size:0.78rem; margin-top:0.6rem; }
-.actions { display:flex; gap:0.35rem; flex-wrap:wrap; }
-.loginbox { max-width:380px; margin:8vh auto 0; }
+ADMIN_CSS = """
+.top{display:flex;justify-content:space-between;align-items:center;gap:1rem;
+  flex-wrap:wrap;margin-bottom:1.5rem}
+.top h1{font-size:1.5rem;font-weight:700}
+.top .sub{margin-top:.15rem;font-size:.875rem;color:rgba(23,32,51,.55)}
+.stats{display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1.25rem}
+.stat{flex:1 1 150px;background:#fff;border:1px solid rgba(23,32,51,.1);
+  border-radius:14px;padding:.9rem 1.1rem;box-shadow:var(--shadow-panel)}
+.stat .k{font-size:.7rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:.12em;color:rgba(23,32,51,.5)}
+.stat .v{margin-top:.3rem;font-size:1.5rem;font-weight:700;letter-spacing:-.03em}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+  gap:1rem;align-items:end}
+.section-title{font-size:1.05rem;font-weight:700;margin-bottom:1rem}
+.rowform{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap}
+.rowform .input{width:auto;min-height:36px;padding:.35rem .6rem;font-size:.8rem;
+  border-radius:10px}
+.rowform input[type=number]{width:96px}
+.rowform input[type=text]{width:150px}
+.ck{display:flex;align-items:center;gap:.35rem;font-size:.78rem;
+  color:rgba(23,32,51,.6);white-space:nowrap}
+.ck input{width:auto}
+.actions{display:flex;gap:.35rem;flex-wrap:wrap;margin-top:.45rem}
+.loginbox{max-width:380px;margin:7vh auto 0}
+.muted{color:rgba(23,32,51,.45)}
+.page-head{display:flex;align-items:center;gap:.75rem}
+.page-head .mark{display:grid;place-items:center;width:42px;height:42px;
+  border-radius:12px;background:var(--brand-ink);color:#fff;font-weight:800;font-size:.85rem}
+.overflow{overflow-x:auto}
+.stack-gap{margin-bottom:1.25rem}
 """
 
 
 def page(title: str, body: str, *, warn: str = "", info: str = "") -> str:
     banners = ""
     if info:
-        banners += f'<div class="alert a-ok">{esc(info)}</div>'
+        banners += f'<p class="alert alert-ok" role="status">{esc(info)}</p>'
     if warn:
-        banners += f'<div class="alert a-err">{esc(warn)}</div>'
-    return f"""<!DOCTYPE html>
-<html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{esc(title)} | Captive Portal Admin</title>
-<style>{BASE_CSS}</style>
-</head><body><div class="wrap">{banners}{body}</div></body></html>"""
+        banners += f'<p class="alert alert-error" role="alert">{esc(warn)}</p>'
+    block = f'<div class="stack-gap">{banners}</div>' if banners else ""
+    return common.page_shell(title, block + body, compact_credit=True,
+                             extra_css=ADMIN_CSS)
 
 
 def render_login(warn: str = "") -> str:
+    alert = (
+        f'<p class="alert alert-error" role="alert" style="margin-bottom:1rem">{esc(warn)}</p>'
+        if warn
+        else ""
+    )
     body = f"""
 <div class="loginbox">
-  <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:1.25rem">
-    <div style="width:42px;height:42px;border-radius:10px;background:linear-gradient(135deg,#3b82f6,#1d4ed8);
-                display:flex;align-items:center;justify-content:center;font-weight:700">CP</div>
-    <div><h1>Captive Portal Admin</h1><div class="sub">Bandwidth &amp; access control</div></div>
+  <div class="page-head" style="margin-bottom:1.25rem">
+    <span class="mark">CP</span>
+    <div>
+      <h1>Captive Portal Admin</h1>
+      <div class="sub">Bandwidth &amp; access control</div>
+    </div>
   </div>
   <div class="card">
+    {alert}
     <form method="post" action="/login">
-      <label for="password">Admin password</label>
-      <input type="password" id="password" name="password" autocomplete="current-password" autofocus required>
-      <button class="btn" type="submit" style="width:100%;margin-top:1rem">Sign in</button>
+      <label class="label" for="password">Admin password</label>
+      <input class="input" type="password" id="password" name="password"
+             autocomplete="current-password" autofocus required>
+      <button class="btn btn-primary btn-block" type="submit" style="margin-top:1rem">Sign in</button>
     </form>
-    <div class="note">Restricted to the WAN side (eth0). Password is set as
-      <span class="mono">ADMIN_PASSWORD</span> in <span class="mono">/opt/captive-portal/.env</span>.</div>
+    <p class="note" style="text-align:left">Restricted to the WAN side (eth0). Password is
+      <code>ADMIN_PASSWORD</code> in <code>/opt/captive-portal/.env</code>.</p>
   </div>
 </div>"""
-    return page("Sign in", body, warn=warn)
+    return page("Sign in", body)
 
 
 def render_dashboard(info: str = "", warn: str = "") -> str:
@@ -249,7 +215,7 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
     enforced = {mac for mac, _ in common.list_bw_rules()}
     all_macs = sorted(set(devices) | authorized)
 
-    limited = sum(1 for mac in all_macs if int(devices.get(mac, {}).get("limit_kbps") or 0) > 0)
+    limited = sum(1 for m in all_macs if int(devices.get(m, {}).get("limit_kbps") or 0) > 0)
     unlimited = len(all_macs) - limited
 
     stats = f"""
@@ -261,28 +227,37 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
 </div>"""
 
     add_form = """
-<div class="card">
-  <h2>Add or update a device</h2>
+<div class="card" style="margin-bottom:1.25rem">
+  <h2 class="section-title">Add or update a device</h2>
   <form method="post" action="/devices">
     <div class="grid">
-      <div><label for="mac">MAC address</label>
-        <input type="text" id="mac" name="mac" placeholder="aa:bb:cc:dd:ee:ff" required></div>
-      <div><label for="label">Label</label>
-        <input type="text" id="label" name="label" placeholder="Student laptop"></div>
-      <div><label for="limit_kbps">Download = Upload limit (kbps)</label>
-        <input type="number" id="limit_kbps" name="limit_kbps" min="0" step="1" value="0"></div>
-      <div><label class="ck" style="margin-bottom:0.6rem">
-        <input type="checkbox" name="unlimited" value="1"> Unlimited</label>
-        <button class="btn" type="submit" style="width:100%">Save &amp; apply</button></div>
+      <div>
+        <label class="label" for="mac">MAC address</label>
+        <input class="input" type="text" id="mac" name="mac" placeholder="aa:bb:cc:dd:ee:ff" required>
+      </div>
+      <div>
+        <label class="label" for="label">Label</label>
+        <input class="input" type="text" id="label" name="label" placeholder="Student laptop">
+      </div>
+      <div>
+        <label class="label" for="limit_kbps">Download = Upload (kbps)</label>
+        <input class="input" type="number" id="limit_kbps" name="limit_kbps" min="0" step="1" value="0">
+      </div>
+      <div>
+        <label class="ck" style="margin-bottom:.6rem">
+          <input type="checkbox" name="unlimited" value="1"> Unlimited
+        </label>
+        <button class="btn btn-primary btn-block" type="submit">Save &amp; apply</button>
+      </div>
     </div>
   </form>
-  <div class="note">The single value is applied to <strong>both</strong> download and upload.
-    Tick <em>Unlimited</em> (or set 0) to remove the limit. 1000 kbps = 1 Mbit/s.</div>
+  <p class="note" style="text-align:left">The single value applies to <strong>both</strong> download
+    and upload. Tick <em>Unlimited</em> (or set 0) to remove the limit. 1000 kbps = 1 Mbit/s.</p>
 </div>"""
 
     if not all_macs:
-        rows = ('<tr><td colspan="5" class="sub" style="padding:1.5rem 0.5rem">'
-                'No devices yet. They appear here automatically after a client gets a DHCP lease, '
+        rows = ('<tr><td colspan="5" class="muted" style="padding:1.5rem .5rem">'
+                'No devices yet. They appear here once a client takes a DHCP lease, '
                 'or add one above.</td></tr>')
     else:
         rows = ""
@@ -293,40 +268,44 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
             is_auth = mac in authorized
             is_enforced = mac in enforced
 
-            auth_badge = ('<span class="badge b-ok">Authorized</span>' if is_auth
-                          else '<span class="badge b-no">Blocked</span>')
-            lim_badge = ('<span class="badge b-lim">Limit active</span>' if is_enforced
-                         else ('<span class="badge b-unl">Unlimited</span>' if limit <= 0
-                               else '<span class="badge b-no">Not applied</span>'))
+            auth_badge = ('<span class="badge badge-green">Authorized</span>' if is_auth
+                          else '<span class="badge badge-default">Blocked</span>')
+            if is_enforced:
+                lim_badge = '<span class="badge badge-green">Limit active</span>'
+            elif limit <= 0:
+                lim_badge = '<span class="badge badge-orange">Unlimited</span>'
+            else:
+                lim_badge = '<span class="badge badge-default">Not applied</span>'
 
-            auth_action = (f'<form method="post" action="/devices/deauthorize" style="display:inline">'
-                           f'<input type="hidden" name="mac" value="{esc(mac)}">'
-                           f'<button class="btn btn-sm btn-ghost" type="submit">Revoke</button></form>'
-                           if is_auth else
-                           f'<form method="post" action="/devices/authorize" style="display:inline">'
-                           f'<input type="hidden" name="mac" value="{esc(mac)}">'
-                           f'<button class="btn btn-sm btn-green" type="submit">Authorize</button></form>')
+            auth_action = (
+                f'<form method="post" action="/devices/deauthorize" style="display:inline">'
+                f'<input type="hidden" name="mac" value="{esc(mac)}">'
+                f'<button class="btn btn-ghost btn-sm" type="submit">Revoke</button></form>'
+                if is_auth else
+                f'<form method="post" action="/devices/authorize" style="display:inline">'
+                f'<input type="hidden" name="mac" value="{esc(mac)}">'
+                f'<button class="btn btn-primary btn-sm" type="submit">Authorize</button></form>'
+            )
 
             rows += f"""
 <tr>
   <td class="mono">{esc(mac)}</td>
-  <td>{esc(label) or '<span class="sub">—</span>'}</td>
-  <td>{esc(fmt_limit(limit))}<div style="margin-top:0.35rem">{lim_badge}</div></td>
+  <td>{esc(label) or '<span class="muted">&mdash;</span>'}</td>
+  <td>{esc(fmt_limit(limit))}<div style="margin-top:.35rem">{lim_badge}</div></td>
   <td>{auth_badge}</td>
   <td>
     <form method="post" action="/devices" class="rowform">
       <input type="hidden" name="mac" value="{esc(mac)}">
-      <input type="text" name="label" value="{esc(label)}" placeholder="Label">
-      <input type="number" name="limit_kbps" min="0" step="1" value="{limit}">
-      <label class="ck"><input type="checkbox" name="unlimited" value="1"
-        {'checked' if limit <= 0 else ''}>Unlim</label>
-      <button class="btn btn-sm" type="submit">Apply</button>
+      <input class="input" type="text" name="label" value="{esc(label)}" placeholder="Label">
+      <input class="input" type="number" name="limit_kbps" min="0" step="1" value="{limit}">
+      <label class="ck"><input type="checkbox" name="unlimited" value="1" {'checked' if limit <= 0 else ''}>Unlim</label>
+      <button class="btn btn-secondary btn-sm" type="submit">Apply</button>
     </form>
-    <div class="actions" style="margin-top:0.4rem">
+    <div class="actions">
       {auth_action}
       <form method="post" action="/devices/delete" style="display:inline">
         <input type="hidden" name="mac" value="{esc(mac)}">
-        <button class="btn btn-sm btn-red" type="submit">Delete</button>
+        <button class="btn btn-danger btn-sm" type="submit">Delete</button>
       </form>
     </div>
   </td>
@@ -334,21 +313,27 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
 
     table = f"""
 <div class="card">
-  <h2>Devices</h2>
-  <div style="overflow-x:auto">
-  <table>
-    <thead><tr><th>MAC</th><th>Label</th><th>Bandwidth</th><th>Access</th><th>Manage</th></tr></thead>
-    <tbody>{rows}</tbody>
-  </table>
+  <h2 class="section-title">Devices</h2>
+  <div class="overflow">
+    <table>
+      <thead><tr><th>MAC</th><th>Label</th><th>Bandwidth</th><th>Access</th><th>Manage</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
   </div>
-  <div class="note">"Revoke" removes the device from <span class="mono">authorized_macs</span>
-    (it must sign in again). "Delete" also removes the stored label and limit.</div>
+  <p class="note" style="text-align:left">"Revoke" removes the device from
+    <span class="mono">authorized_macs</span> (it must sign in again). "Delete" also removes the
+    stored label and limit.</p>
 </div>"""
 
     top = """
 <div class="top">
-  <div><h1>Captive Portal Admin</h1><div class="sub">Per-user bandwidth and access control</div></div>
-  <form method="post" action="/logout"><button class="btn btn-ghost" type="submit">Sign out</button></form>
+  <div>
+    <h1>Captive Portal Admin</h1>
+    <div class="sub">Per-user bandwidth and access control</div>
+  </div>
+  <form method="post" action="/logout">
+    <button class="btn btn-secondary btn-sm" type="submit">Sign out</button>
+  </form>
 </div>"""
 
     return page("Dashboard", top + stats + add_form + table, info=info, warn=warn)

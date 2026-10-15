@@ -290,3 +290,231 @@ def log_auth_event(ip: str, mac: str, username: str, name: str, method: str) -> 
             fh.write(entry)
     except Exception:
         pass
+
+
+# --------------------------------------------------------------------------- #
+# Presentation — shared design language
+#
+# Ported from CasperOng/open-day-attendance-science so both projects share one
+# visual signature: paper/ink palette, green brand, white rounded cards,
+# uppercase letter-spaced labels, pill badges, Avenir, and the developer
+# signature in the footer.
+#   paper #f6f7f9   ink #172033   mint #e7f6ee   fog #e6e9ef
+#   brand #89d0af   brand-ink #1f7a4e (their token is named "coral")   amber #d99a26
+# --------------------------------------------------------------------------- #
+SIGNATURE_PATH = (
+    "M 223 160 L 73 100 L 133 100 L 598 40 L 178 40 "
+    "L 238 40 L 538 40 L 403 160 L 313 100"
+)
+
+DESIGN_CSS = """
+:root{
+  --paper:#f6f7f9; --ink:#172033; --line:#e2e6ec; --mint:#e7f6ee;
+  --brand:#89d0af; --brand-ink:#1f7a4e; --brand-ink-hover:#185e3b;
+  --amber:#d99a26; --fog:#e6e9ef;
+  --font-ui:"Avenir Next",Avenir,"Segoe UI",system-ui,sans-serif;
+  --font-mono:"SF Mono","Cascadia Code",ui-monospace,monospace;
+  --shadow-lift:0 16px 40px rgba(23,32,51,.08);
+  --shadow-panel:0 1px 3px rgba(23,32,51,.06),0 8px 24px rgba(23,32,51,.04);
+}
+*{box-sizing:border-box}
+html{background:var(--paper)}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font-family:var(--font-ui);letter-spacing:-.01em;-webkit-font-smoothing:antialiased}
+h1,h2,h3{margin:0;letter-spacing:-.035em}
+p{margin:0}
+code,kbd,pre,.mono{font-family:var(--font-mono);letter-spacing:0}
+a{color:inherit;text-decoration:none}
+:focus-visible{outline:3px solid rgba(31,122,78,.35);outline-offset:3px}
+::selection{background:#d6ebde;color:#132238}
+@media (prefers-reduced-motion:no-preference){
+  a,button{transition:color .15s ease,background-color .15s ease,border-color .15s ease,box-shadow .15s ease}
+}
+.wrap{max-width:1080px;margin:0 auto;padding:2.5rem 1.25rem}
+
+/* ---- card ---- */
+.card{background:#fff;border:1px solid rgba(23,32,51,.1);border-radius:16px;
+  padding:1.25rem;box-shadow:var(--shadow-panel)}
+
+/* ---- buttons ---- */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;
+  min-height:44px;padding:.625rem 1rem;border-radius:12px;border:0;
+  font:inherit;font-size:.875rem;font-weight:600;letter-spacing:-.01em;
+  cursor:pointer;white-space:nowrap;text-align:center}
+.btn:active{transform:translateY(1px)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn-primary{background:var(--brand-ink);color:#fff}
+.btn-primary:hover{background:var(--brand-ink-hover)}
+.btn-secondary{background:#fff;color:var(--ink);border:1px solid rgba(23,32,51,.1);
+  box-shadow:0 1px 2px rgba(23,32,51,.05)}
+.btn-secondary:hover{border-color:rgba(23,32,51,.2);background:var(--paper)}
+.btn-ghost{background:transparent;color:rgba(23,32,51,.6)}
+.btn-ghost:hover{background:rgba(23,32,51,.05);color:var(--ink)}
+.btn-danger{background:#dc2626;color:#fff}
+.btn-danger:hover{background:#b91c1c}
+.btn-sm{min-height:36px;padding:.4rem .7rem;font-size:.8rem;border-radius:10px}
+.btn-block{width:100%}
+
+/* ---- form controls ---- */
+.input{min-height:44px;width:100%;border-radius:12px;border:1px solid rgba(23,32,51,.15);
+  background:#fff;padding:.625rem .875rem;font:inherit;font-size:.875rem;
+  color:var(--ink);outline:0}
+.input::placeholder{color:rgba(23,32,51,.35)}
+.input:focus{border-color:var(--brand-ink);box-shadow:0 0 0 4px rgba(31,122,78,.1)}
+.label{display:block;margin-bottom:.5rem;font-size:.75rem;font-weight:700;
+  text-transform:uppercase;letter-spacing:.12em;color:rgba(23,32,51,.55)}
+
+/* ---- badges ---- */
+.badge{display:inline-flex;align-items:center;border-radius:9999px;
+  padding:.25rem .625rem;font-size:.75rem;font-weight:700;letter-spacing:.02em}
+.badge-default{background:rgba(23,32,51,.05);color:rgba(23,32,51,.6)}
+.badge-green{background:#d1fae5;color:#065f46}
+.badge-orange{background:#fef3c7;color:#78350f}
+
+/* ---- alerts ---- */
+.alert{border-radius:12px;padding:.75rem;font-size:.875rem;font-weight:500}
+.alert-error{border:1px solid #fecaca;background:#fef2f2;color:#b91c1c}
+.alert-ok{border:1px solid #a7f3d0;background:#ecfdf5;color:#065f46}
+
+/* ---- tables ---- */
+table{width:100%;border-collapse:collapse;font-size:.875rem}
+th{text-align:left;font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;
+  color:rgba(23,32,51,.55);padding:.6rem .5rem;border-bottom:1px solid var(--line);
+  font-weight:700}
+td{padding:.7rem .5rem;border-bottom:1px solid rgba(226,230,236,.8);vertical-align:middle}
+tbody tr{transition:background-color .15s ease}
+tbody tr:hover{background:rgba(137,208,175,.08)}
+tbody tr:last-child td{border-bottom:0}
+
+/* ---- developer signature ---- */
+.credit{display:flex;justify-content:center;padding:.5rem 1.25rem 2rem}
+.credit a{display:inline-flex;flex-direction:column;align-items:center;gap:.75rem;
+  max-width:100%;padding:.5rem;border-radius:8px;text-align:center;
+  font-size:.75rem;color:rgba(23,32,51,.7)}
+.credit a:hover{color:var(--ink)}
+.credit svg{width:12rem;height:auto;color:var(--ink);opacity:.6}
+.credit a:hover svg{opacity:.8}
+.credit-compact svg{width:7rem}
+.credit span.stack{display:flex;flex-direction:column;gap:.25rem}
+.credit a:hover .credit-line{text-decoration:underline;text-underline-offset:4px}
+
+/* ---- captive portal auth layout ---- */
+.auth{display:flex;flex-direction:column;min-height:100dvh;background:var(--paper)}
+@media (min-width:1024px){.auth{flex-direction:row}}
+.auth-aside{position:relative;display:none;overflow:hidden;background:var(--ink);color:#fff}
+@media (min-width:1024px){
+  .auth-aside{display:flex;flex-direction:column;justify-content:center;
+    width:46%;padding:4rem 3rem}
+}
+.auth-aside .glow{position:absolute;border-radius:9999px;filter:blur(64px);pointer-events:none}
+.auth-aside .glow-1{width:24rem;height:24rem;background:rgba(31,122,78,.3);left:-6rem;top:-6rem}
+.auth-aside .glow-2{width:24rem;height:24rem;background:rgba(137,208,175,.18);right:-4rem;bottom:-8rem}
+.auth-aside-inner{position:relative}
+.crest{display:grid;place-items:center;width:5rem;height:5rem;border-radius:24px;
+  background:#fff;color:var(--brand-ink);font-weight:800;font-size:1.25rem;
+  letter-spacing:-.02em;box-shadow:var(--shadow-lift)}
+.auth-aside h1{margin-top:2rem;font-size:2.5rem;line-height:1.05;font-weight:700;color:#fff}
+.auth-aside .sub{margin-top:1rem;max-width:24rem;color:rgba(255,255,255,.6);
+  font-size:1rem;line-height:1.6}
+.auth-aside .accent{margin-top:.5rem;color:var(--brand);font-size:.875rem;
+  font-weight:500;letter-spacing:0}
+.auth-main{display:flex;flex:1;flex-direction:column;min-width:0}
+.auth-main>main{display:grid;flex:1;place-items:center;padding:2.5rem 1.25rem}
+@media (min-width:1024px){.auth-main>main{padding:2.5rem 3rem}}
+.auth-brand-mobile{display:flex;flex-direction:column;align-items:center;gap:.5rem;
+  text-align:center;margin-bottom:2rem}
+@media (min-width:1024px){.auth-brand-mobile{display:none}}
+.auth-brand-mobile .row{display:flex;align-items:center;gap:.75rem}
+.auth-brand-mobile .crest-sm{display:grid;place-items:center;width:3rem;height:3rem;
+  border-radius:18px;background:var(--ink);color:var(--brand);font-weight:800;font-size:.9rem}
+.auth-brand-mobile h1{font-size:1.25rem;font-weight:700}
+.auth-brand-mobile .event{font-size:.75rem;font-weight:500;color:rgba(23,32,51,.55)}
+.auth-card{width:100%;max-width:28rem;padding:1.5rem}
+@media (min-width:640px){.auth-card{padding:2rem}}
+.auth-card h2{font-size:1.5rem;font-weight:700}
+
+/* ---- portal detail panel ---- */
+.detail-panel{margin:1.25rem 0;border:1px solid rgba(23,32,51,.1);
+  background:var(--paper);border-radius:12px;padding:.4rem .9rem}
+.detail-row{display:flex;justify-content:space-between;align-items:center;gap:1rem;
+  padding:.55rem 0;font-size:.875rem}
+.detail-row+.detail-row{border-top:1px solid rgba(23,32,51,.07)}
+.detail-label{color:rgba(23,32,51,.55)}
+.detail-value{font-family:var(--font-mono);font-weight:600;font-size:.8rem}
+
+/* ---- divider + notes ---- */
+.divider{display:flex;align-items:center;gap:.75rem;margin:1.35rem 0 1rem;
+  color:rgba(23,32,51,.45);font-size:.7rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:.12em}
+.divider::before,.divider::after{content:"";flex:1;border-bottom:1px solid rgba(23,32,51,.1)}
+.note{margin-top:.6rem;text-align:center;font-size:.75rem;color:rgba(23,32,51,.45)}
+.note code{color:rgba(23,32,51,.65)}
+
+/* ---- success state ---- */
+.done{display:flex;flex-direction:column;align-items:center;text-align:center}
+.done-icon{display:grid;place-items:center;width:3.5rem;height:3.5rem;border-radius:9999px;
+  background:var(--mint);color:var(--brand-ink);font-size:1.5rem;font-weight:700;
+  margin-bottom:1.25rem}
+.done h2{font-size:1.5rem;font-weight:700}
+.done .lede{margin-top:.5rem;color:rgba(23,32,51,.6);font-size:.9rem;line-height:1.6}
+
+/* ---- microsoft mark ---- */
+.ms-mark{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;
+  gap:2px;width:16px;height:16px;flex-shrink:0}
+.ms-mark i{display:block}
+.ms-chip{display:grid;place-items:center;width:22px;height:22px;border-radius:5px;
+  background:#fff;flex-shrink:0}
+"""
+
+
+def esc(value: object) -> str:
+    import html as _html
+
+    return _html.escape(str(value if value is not None else ""))
+
+
+def signature_svg() -> str:
+    """The developer signature mark (inline, inherits currentColor)."""
+    return (
+        '<svg viewBox="65 32 541 136" xmlns="http://www.w3.org/2000/svg" '
+        'aria-hidden="true" focusable="false">'
+        f'<path d="{SIGNATURE_PATH}" stroke="currentColor" stroke-width="3" '
+        'fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
+        "</svg>"
+    )
+
+
+def microsoft_mark() -> str:
+    return (
+        '<span class="ms-mark" aria-hidden="true">'
+        '<i style="background:#f25022"></i><i style="background:#7fba00"></i>'
+        '<i style="background:#00a4ef"></i><i style="background:#ffb900"></i>'
+        "</span>"
+    )
+
+
+def credit_html(compact: bool = False) -> str:
+    """Developer signature footer, matching the open-day-attendance reference."""
+    cls = "credit credit-compact" if compact else "credit"
+    return f"""<footer class="{cls}">
+  <a href="https://casperong.is-a.dev/" target="_blank" rel="noopener noreferrer">
+    {signature_svg()}
+    <span class="stack">
+      <span class="credit-line">Developed by Casper Ong</span>
+      <span>With the help of OpenAI Codex</span>
+    </span>
+  </a>
+</footer>"""
+
+
+def page_shell(title: str, body: str, *, credit: bool = True,
+               compact_credit: bool = False, wrap: bool = True,
+               extra_css: str = "") -> str:
+    inner = f'<div class="wrap">{body}</div>' if wrap else body
+    footer = credit_html(compact=compact_credit) if credit else ""
+    return f"""<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{esc(title)}</title>
+<style>{DESIGN_CSS}{extra_css}</style>
+</head><body>{inner}{footer}</body></html>"""
