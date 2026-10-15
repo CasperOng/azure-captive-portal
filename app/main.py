@@ -2,6 +2,7 @@ import base64
 import datetime
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -52,6 +53,22 @@ def get_config() -> dict:
 
 
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
+
+# The captive segment served by CT 150 on eth1.
+CAPTIVE_NET = ipaddress.ip_network("10.50.0.0/24")
+
+
+def on_captive_segment(ip: str) -> bool:
+    """True only for addresses on the captive VLAN.
+
+    Requests arriving via the Cloudflare tunnel come from the cloudflared
+    container, so they are never on the captive segment and the device MAC
+    cannot be resolved for them.
+    """
+    try:
+        return ipaddress.ip_address(ip) in CAPTIVE_NET
+    except ValueError:
+        return False
 
 
 def get_client_mac(ip: str) -> Optional[str]:
@@ -182,6 +199,19 @@ def decode_jwt_claims(token: str) -> dict:
 
 def render_login_html(ip: str, mac: str, authorized: bool = False, error: str = "") -> str:
     e = common.esc
+    captive = on_captive_segment(ip)
+
+    if captive:
+        net_label = "Captive segment (10.50.0.0/24)"
+        tunnel_note = ""
+    else:
+        net_label = "External (via Cloudflare tunnel)"
+        tunnel_note = (
+            '<p class="alert alert-error" role="alert" style="margin-top:1rem">'
+            'You are on the public hostname, not the captive Wi-Fi. Your device '
+            'cannot be identified from here, so signing in will not authorize your '
+            'phone or laptop. Connect to the <em>Casper-SSO</em> network and retry.</p>'
+        )
     status_badge = (
         '<span class="badge badge-green">Authorized &middot; 8h active</span>'
         if authorized
@@ -255,9 +285,10 @@ def render_login_html(ip: str, mac: str, authorized: bool = False, error: str = 
           </div>
           <div class="detail-row">
             <span class="detail-label">Network</span>
-            <span class="detail-value">10.50.0.0/24</span>
+            <span class="detail-value">{e(net_label)}</span>
           </div>
         </div>
+        {tunnel_note}
         <form method="post" action="/login" style="margin-top:1.25rem">
           <label class="label" for="email">School email</label>
           <input class="input" type="email" id="email" name="email"
