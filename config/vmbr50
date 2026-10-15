@@ -1,0 +1,7 @@
+# Isolated L2 for the local hostapd AP (SSID: Casper-SSO).
+# CT 150 (oauth-core) eth1 attaches here as the captive gateway 10.50.0.1/24.
+auto vmbr50
+iface vmbr50 inet manual
+	bridge-ports wlp1s0
+	bridge-stp off
+	bridge-fd 0
