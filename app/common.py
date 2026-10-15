@@ -109,10 +109,15 @@ def db_init() -> None:
                 password_hash TEXT NOT NULL,
                 label         TEXT NOT NULL DEFAULT '',
                 created_at    TEXT NOT NULL,
-                last_login_at TEXT
+                last_login_at TEXT,
+                role          TEXT NOT NULL DEFAULT 'wifi'
             )
             """
         )
+        # Migrate databases created before roles existed.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
+        if "role" not in cols:
+            conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'wifi'")
         conn.commit()
 
 
@@ -193,22 +198,56 @@ def normalise_email(email: str) -> str:
     return (email or "").strip().lower()
 
 
-def create_user(email: str, password: str, label: str = "") -> Dict:
+def create_user(email: str, password: str, label: str = "", role: str = "wifi") -> Dict:
     email = normalise_email(email)
     if not email or "@" not in email:
         raise ValueError(f"Invalid email address: {email!r}")
     if not password or len(password) < 8:
         raise ValueError("Password must be at least 8 characters")
+    if role not in ("wifi", "admin"):
+        raise ValueError(f"Unknown role: {role!r}")
     now = _now()
     with db_connect() as conn:
         conn.execute(
-            "INSERT INTO users (email,password_hash,label,created_at) VALUES (?,?,?,?)"
+            "INSERT INTO users (email,password_hash,label,created_at,role) VALUES (?,?,?,?,?)"
             " ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash,"
-            " label=excluded.label",
-            (email, _hash_password(password), label, now),
+            " label=excluded.label, role=excluded.role",
+            (email, _hash_password(password), label, now, role),
         )
         conn.commit()
     return get_user(email)  # type: ignore[return-value]
+
+
+def set_user_role(email: str, role: str) -> None:
+    if role not in ("wifi", "admin"):
+        raise ValueError(f"Unknown role: {role!r}")
+    email = normalise_email(email)
+    with db_connect() as conn:
+        conn.execute("UPDATE users SET role=? WHERE email=?", (role, email))
+        conn.commit()
+
+
+def list_admins() -> List[Dict]:
+    with db_connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM users WHERE role='admin' ORDER BY email"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def verify_admin(email: str, password: str) -> Optional[Dict]:
+    """Return the admin record when credentials match an account with role=admin."""
+    user = get_user(email)
+    if not user or user.get("role") != "admin":
+        return None
+    if not verify_password(password, user["password_hash"]):
+        return None
+    with db_connect() as conn:
+        conn.execute(
+            "UPDATE users SET last_login_at=? WHERE email=?", (_now(), user["email"])
+        )
+        conn.commit()
+    return user
 
 
 def set_user_password(email: str, password: str) -> None:
@@ -808,6 +847,37 @@ def credit_html(compact: bool = False) -> str:
     </span>
   </a>
 </footer>"""
+
+
+TIMER_JS = """
+(function () {
+  function fmt(t) {
+    t = Math.max(0, Math.floor(t));
+    var h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+    if (h) return h + "h " + m + "m";
+    if (m) return m + "m " + s + "s";
+    return s + "s";
+  }
+  function tick() {
+    document.querySelectorAll("[data-countup]").forEach(function (el) {
+      var v = parseInt(el.getAttribute("data-countup"), 10) + 1;
+      el.setAttribute("data-countup", v);
+      el.textContent = fmt(v);
+    });
+    document.querySelectorAll("[data-countdown]").forEach(function (el) {
+      var v = parseInt(el.getAttribute("data-countdown"), 10) - 1;
+      el.setAttribute("data-countdown", v);
+      el.textContent = fmt(v);
+    });
+  }
+  setInterval(tick, 1000);
+})();
+"""
+
+
+def timer_script() -> str:
+    """Inline script that ticks [data-countup] / [data-countdown] elements."""
+    return f"<script>{TIMER_JS}</script>"
 
 
 def page_shell(title: str, body: str, *, credit: bool = True,

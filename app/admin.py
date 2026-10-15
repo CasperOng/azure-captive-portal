@@ -119,6 +119,15 @@ def require_session(request: Request) -> None:
         raise HTTPException(status_code=303, headers={"Location": "/login"}, detail="Login required")
 
 
+def session_subject(request: Request) -> str:
+    """Who is signed in: an admin email, or 'bootstrap' for the shared password."""
+    cfg = get_config()
+    data = common.verify_payload(
+        request.cookies.get(COOKIE_NAME, ""), cfg["SESSION_SECRET"], SESSION_MAX_AGE
+    )
+    return (data or {}).get("sub", "admin")
+
+
 # --------------------------------------------------------------------------- #
 # Rendering
 # --------------------------------------------------------------------------- #
@@ -217,19 +226,23 @@ def render_login(warn: str = "") -> str:
   <div class="card">
     {alert}
     <form method="post" action="/login">
-      <label class="label" for="password">Admin password</label>
+      <label class="label" for="email">Admin email</label>
+      <input class="input" type="email" id="email" name="email"
+             autocomplete="username" placeholder="you@example.com" autofocus>
+      <label class="label" for="password" style="margin-top:.85rem">Password</label>
       <input class="input" type="password" id="password" name="password"
-             autocomplete="current-password" autofocus required>
+             autocomplete="current-password" required>
       <button class="btn btn-primary btn-block" type="submit" style="margin-top:1rem">Sign in</button>
     </form>
-    <p class="note" style="text-align:left">Restricted to the WAN side (eth0). Password is
-      <code>ADMIN_PASSWORD</code> in <code>/opt/captive-portal/.env</code>.</p>
+    <p class="note" style="text-align:left">Restricted to the WAN side (eth0).
+      Leave the email blank to use the shared bootstrap password
+      (<code>ADMIN_PASSWORD</code> in <code>/opt/captive-portal/.env</code>).</p>
   </div>
 </div>"""
     return page("Sign in", body)
 
 
-def render_dashboard(info: str = "", warn: str = "") -> str:
+def render_dashboard(info: str = "", warn: str = "", subject: str = "admin") -> str:
     devices = {d["mac"]: d for d in common.list_devices()}
     authorized = set(common.list_authorized_macs())
     enforced = {mac for mac, _ in common.list_bw_rules()}
@@ -277,17 +290,23 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
 
     users = common.list_users()
     if users:
-        urows = "".join(
-            f'<tr><td class="mono">{esc(u["email"])}</td>'
-            f'<td>{esc(u.get("label") or "")}</td>'
-            f'<td>{esc(u.get("last_login_at") or "&mdash;")}</td>'
-            f'<td><form method="post" action="/users/delete" style="display:inline">'
-            f'<input type="hidden" name="email" value="{esc(u["email"])}">'
-            f'<button class="btn btn-danger btn-sm" type="submit">Delete</button></form></td></tr>'
-            for u in users
-        )
+        parts = []
+        for u in users:
+            role_badge = ('<span class="badge badge-green">admin</span>'
+                          if u.get("role") == "admin"
+                          else '<span class="badge badge-default">wifi</span>')
+            parts.append(
+                f'<tr><td class="mono">{esc(u["email"])}</td>'
+                f'<td>{esc(u.get("label") or "")}</td>'
+                f'<td>{role_badge}</td>'
+                f'<td>{esc(u.get("last_login_at") or "&mdash;")}</td>'
+                f'<td><form method="post" action="/users/delete" style="display:inline">'
+                f'<input type="hidden" name="email" value="{esc(u["email"])}">'
+                f'<button class="btn btn-danger btn-sm" type="submit">Delete</button></form></td></tr>'
+            )
+        urows = "".join(parts)
     else:
-        urows = ('<tr><td colspan="4" class="muted" style="padding:1.25rem .5rem">'
+        urows = ('<tr><td colspan="5" class="muted" style="padding:1.25rem .5rem">'
                  'No accounts yet. Sign-in is impossible until you add one.</td></tr>')
 
     users_card = f"""
@@ -301,13 +320,19 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
         <input class="input" type="text" id="u-label" name="label" placeholder="Ms Chan"></div>
       <div><label class="label" for="u-pass">Password (min 8)</label>
         <input class="input" type="text" id="u-pass" name="password" autocomplete="new-password" required></div>
+      <div><label class="label" for="u-role">Role</label>
+        <select class="input" id="u-role" name="role">
+          <option value="wifi">Wi-Fi user</option>
+          <option value="admin">Console admin</option>
+        </select></div>
       <div><button class="btn btn-primary btn-block" type="submit">Save account</button></div>
     </div>
   </form>
-  <p class="note" style="text-align:left">Saving an email that already exists resets its password.</p>
+  <p class="note" style="text-align:left">Saving an email that already exists resets its
+    password and role. Wi-Fi users sign in to the captive portal; console admins sign in here.</p>
   <div class="overflow" style="margin-top:1rem">
     <table>
-      <thead><tr><th>Email</th><th>Label</th><th>Last sign-in</th><th></th></tr></thead>
+      <thead><tr><th>Email</th><th>Label</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead>
       <tbody>{urows}</tbody>
     </table>
   </div>
@@ -386,7 +411,7 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
     stored label and limit.</p>
 </div>"""
 
-    top = """
+    top = f"""
 <div class="top">
   <div class="page-head">
     <span class="brandmark"><img src="/brand/logo.svg" alt=""></span>
@@ -395,9 +420,15 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
       <div class="sub">Example Secondary School</div>
     </div>
   </div>
-  <form method="post" action="/logout">
-    <button class="btn btn-secondary btn-sm" type="submit">Sign out</button>
-  </form>
+  <div style="display:flex;align-items:center;gap:.75rem">
+    <div style="text-align:right">
+      <div style="font-size:.8rem;font-weight:600">{esc(subject)}</div>
+      <div style="font-size:.7rem;color:rgba(23,32,51,.5)">signed in</div>
+    </div>
+    <form method="post" action="/logout">
+      <button class="btn btn-secondary btn-sm" type="submit">Sign out</button>
+    </form>
+  </div>
 </div>"""
 
     shell = f"""
@@ -474,24 +505,36 @@ async def login_page(request: Request) -> HTMLResponse:
 
 
 @app.post("/login")
-async def login_submit(request: Request, password: str = Form("")):
+async def login_submit(request: Request, password: str = Form(""), email: str = Form("")):
     ip = client_ip(request)
     if is_locked_out(ip):
         return HTMLResponse(render_login("Too many failed attempts. Try again in a few minutes."),
                             status_code=429)
 
     cfg = get_config()
-    if not cfg["ADMIN_PASSWORD"]:
-        return HTMLResponse(render_login("No ADMIN_PASSWORD configured in .env"), status_code=500)
+    email = common.normalise_email(email)
 
-    import hmac as _hmac
-    if not _hmac.compare_digest(password, cfg["ADMIN_PASSWORD"]):
-        record_failure(ip)
-        return HTMLResponse(render_login("Incorrect password."), status_code=401)
+    if email:
+        # Named admin account.
+        user = common.verify_admin(email, password)
+        if not user:
+            record_failure(ip)
+            return HTMLResponse(render_login("Incorrect email or password."), status_code=401)
+        identity = user["email"]
+    else:
+        # Shared bootstrap password (also the way in before any admin exists).
+        import hmac as _hmac
+        if not cfg["ADMIN_PASSWORD"]:
+            return HTMLResponse(render_login("No ADMIN_PASSWORD configured in .env"), status_code=500)
+        if not _hmac.compare_digest(password, cfg["ADMIN_PASSWORD"]):
+            record_failure(ip)
+            return HTMLResponse(render_login("Incorrect password."), status_code=401)
+        identity = "bootstrap"
 
     clear_failures(ip)
     token = common.sign_payload(
-        {"role": "admin", "ip": ip, "ts": int(time.time())}, cfg["SESSION_SECRET"]
+        {"role": "admin", "sub": identity, "ip": ip, "ts": int(time.time())},
+        cfg["SESSION_SECRET"],
     )
     resp = RedirectResponse("/", status_code=303)
     resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=SESSION_MAX_AGE)
@@ -509,7 +552,7 @@ async def logout() -> RedirectResponse:
 async def dashboard(request: Request, msg: str = "", err: str = ""):
     if not session_valid(request):
         return RedirectResponse("/login", status_code=303)
-    return HTMLResponse(render_dashboard(info=msg, warn=err))
+    return HTMLResponse(render_dashboard(info=msg, warn=err, subject=session_subject(request)))
 
 
 @app.post("/devices")
@@ -578,11 +621,12 @@ async def delete(mac: str = Form("")):
 # JSON API (same WAN-only restriction)
 # --------------------------------------------------------------------------- #
 @app.post("/users")
-async def save_user(request: Request, email: str = Form(""), password: str = Form(""), label: str = Form("")):
+async def save_user(request: Request, email: str = Form(""), password: str = Form(""),
+                    label: str = Form(""), role: str = Form("wifi")):
     if not session_valid(request):
         return RedirectResponse("/login", status_code=303)
     try:
-        common.create_user(email, password, label.strip())
+        common.create_user(email, password, label.strip(), role if role in ("wifi", "admin") else "wifi")
     except ValueError as exc:
         return HTMLResponse(render_dashboard(warn=f"User not saved: {exc}"), status_code=400)
     return RedirectResponse(f"/?msg={esc(f'{common.normalise_email(email)} saved')}", status_code=303)

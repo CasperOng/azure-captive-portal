@@ -230,7 +230,7 @@ def render_login_html(ip: str, mac: str, authorized: bool = False, error: str = 
         <div class="detail-panel">
           <div class="detail-row">
             <span class="detail-label">Connected for</span>
-            <span class="detail-value">{e(sess["connected_human"])}</span>
+            <span class="detail-value" data-countup="{sess["connected_seconds"]}">{e(sess["connected_human"])}</span>
           </div>
           <div class="detail-row">
             <span class="detail-label">Data used</span>
@@ -242,7 +242,7 @@ def render_login_html(ip: str, mac: str, authorized: bool = False, error: str = 
           </div>
           <div class="detail-row">
             <span class="detail-label">Session ends in</span>
-            <span class="detail-value">{e(sess["remaining_human"])}</span>
+            <span class="detail-value" data-countdown="{sess["remaining_seconds"]}">{e(sess["remaining_human"])}</span>
           </div>
         </div>"""
 
@@ -308,7 +308,8 @@ def render_login_html(ip: str, mac: str, authorized: bool = False, error: str = 
     </main>
     {common.credit_html()}
   </div>
-</div>"""
+</div>
+{common.timer_script()}"""
     return common.page_shell("Sign in", body, wrap=False, credit=False)
 
 
@@ -362,8 +363,12 @@ def render_welcome_html(name: str, username: str, ip: str, mac: str, method: str
             <span class="detail-value">8 hours</span>
           </div>
           <div class="detail-row">
+            <span class="detail-label">Session ends in</span>
+            <span class="detail-value" data-countdown="{sess["remaining_seconds"]}">{e(sess["remaining_human"])}</span>
+          </div>
+          <div class="detail-row">
             <span class="detail-label">Connected for</span>
-            <span class="detail-value">{e(sess["connected_human"])}</span>
+            <span class="detail-value" data-countup="{sess["connected_seconds"]}">{e(sess["connected_human"])}</span>
           </div>
           <div class="detail-row">
             <span class="detail-label">Data used</span>
@@ -378,7 +383,8 @@ def render_welcome_html(name: str, username: str, ip: str, mac: str, method: str
     </main>
     {common.credit_html()}
   </div>
-</div>"""
+</div>
+{common.timer_script()}"""
     return common.page_shell("Connected", body, wrap=False, credit=False)
 
 
