@@ -165,6 +165,24 @@ ADMIN_CSS = """
 .brandmark{display:grid;place-items:center;width:44px;height:44px;border-radius:12px;
   background:#fff;border:1px solid rgba(23,32,51,.1);overflow:hidden;flex-shrink:0}
 .brandmark img{width:78%;height:78%;object-fit:contain;display:block}
+/* ---- app shell ---- */
+.shell{display:flex;gap:1.5rem;align-items:flex-start}
+.side{flex:0 0 200px;position:sticky;top:1.5rem;background:#fff;
+  border:1px solid rgba(23,32,51,.1);border-radius:14px;padding:1rem;
+  box-shadow:var(--shadow-panel)}
+.side .brand{display:flex;align-items:center;gap:.6rem;padding-bottom:.9rem;
+  margin-bottom:.9rem;border-bottom:1px solid rgba(23,32,51,.08)}
+.side .brand .nm{font-weight:700;font-size:.9rem;letter-spacing:-.02em;line-height:1.2}
+.side .brand .rl{font-size:.7rem;color:rgba(23,32,51,.5)}
+.side nav{display:flex;flex-direction:column;gap:.15rem}
+.side nav a{display:block;padding:.5rem .65rem;border-radius:9px;font-size:.875rem;
+  font-weight:600;color:rgba(23,32,51,.7);text-decoration:none}
+.side nav a:hover{background:var(--paper);color:var(--ink)}
+.side nav a.on{background:var(--mint);color:var(--brand-ink)}
+.main{flex:1;min-width:0}
+@media (max-width:820px){.shell{flex-direction:column}
+  .side{position:static;flex:none;width:100%}
+  .side nav{flex-direction:row;flex-wrap:wrap}}
 .overflow{overflow-x:auto}
 .stack-gap{margin-bottom:1.25rem}
 """
@@ -344,7 +362,28 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
   </form>
 </div>"""
 
-    return page("Dashboard", top + stats + add_form + table, info=info, warn=warn)
+    shell = f"""
+<div class="shell">
+  <aside class="side">
+    <div class="brand">
+      <span class="brandmark"><img src="/brand/logo.svg" alt=""></span>
+      <div><div class="nm">Captive Portal</div><div class="rl">Admin console</div></div>
+    </div>
+    <nav>
+      <a href="#overview" class="on">Overview</a>
+      <a href="#add">Add device</a>
+      <a href="#devices">Devices</a>
+    </nav>
+  </aside>
+  <div class="main">
+    {top}
+    <div id="overview">{stats}</div>
+    <div id="add">{add_form}</div>
+    <div id="devices">{table}</div>
+  </div>
+</div>"""
+
+    return page("Dashboard", shell, info=info, warn=warn)
 
 
 # --------------------------------------------------------------------------- #
