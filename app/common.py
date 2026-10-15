@@ -23,7 +23,11 @@ LOG_PATH = Path("/var/log/captive-auth.log")
 NFT_FAMILY = "inet"
 NFT_TABLE = "captive"
 BW_CHAIN = "bandwidth_limits"
+ACCT_CHAIN = "accounting"
 AUTH_SET = "authorized_macs"
+
+# authorized_macs elements carry this timeout; connected time is derived from it.
+SESSION_SECONDS = 8 * 3600
 
 MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 
@@ -185,6 +189,138 @@ def apply_limit(mac: str, limit_kbps: int) -> bool:
     return ok
 
 
+# --------------------------------------------------------------------------- #
+# nftables: per-MAC traffic accounting (current session only)
+#
+# Rules are volatile like the rest: nft rules do not survive a reload, so they
+# are reinstalled whenever a device is authorized and cleared when revoked.
+# --------------------------------------------------------------------------- #
+def _acct_rules() -> List[Tuple[str, str, int, int, int]]:
+    """Return [(mac, direction, handle, packets, bytes), ...]."""
+    res = _run(["nft", "-j", "list", "chain", NFT_FAMILY, NFT_TABLE, ACCT_CHAIN])
+    if res.returncode != 0:
+        return []
+    try:
+        data = json.loads(res.stdout or "{}")
+    except json.JSONDecodeError:
+        return []
+    out: List[Tuple[str, str, int, int, int]] = []
+    for obj in data.get("nftables", []):
+        rule = obj.get("rule")
+        if not rule:
+            continue
+        comment = rule.get("comment") or ""
+        if not comment.startswith("acct|"):
+            continue
+        # MACs contain colons, so the fields are pipe-separated.
+        _, mac, direction = comment.split("|", 2)
+        counters = rule.get("counter") or {}
+        out.append((
+            mac.lower(),
+            direction,
+            int(rule.get("handle", 0)),
+            int(counters.get("packets", 0)),
+            int(counters.get("bytes", 0)),
+        ))
+    return out
+
+
+def clear_acct_rules(mac: Optional[str] = None) -> int:
+    mac = mac.lower() if mac else None
+    removed = 0
+    for rule_mac, _direction, handle, _p, _b in _acct_rules():
+        if mac is None or rule_mac == mac:
+            if _run(["nft", "delete", "rule", NFT_FAMILY, NFT_TABLE,
+                     ACCT_CHAIN, "handle", str(handle)]).returncode == 0:
+                removed += 1
+    return removed
+
+
+def ensure_acct_rules(mac: str) -> bool:
+    """Install upload+download byte counters for a MAC (idempotent)."""
+    mac = (mac or "").lower().strip()
+    if not valid_mac(mac):
+        raise ValueError(f"Invalid MAC address: {mac!r}")
+    existing = {(m, d) for m, d, _h, _p, _b in _acct_rules() if m == mac}
+    ok = True
+    for direction, kind in (("saddr", "up"), ("daddr", "down")):
+        if (mac, kind) in existing:
+            continue
+        res = _run([
+            "nft", "add", "rule", NFT_FAMILY, NFT_TABLE, ACCT_CHAIN,
+            "ether", direction, mac,
+            "counter",
+            "comment", f'"acct|{mac}|{kind}"',
+        ])
+        ok = ok and res.returncode == 0
+    return ok
+
+
+def read_acct(mac: str) -> Dict[str, int]:
+    """Bytes/packets used by a MAC in the current session."""
+    mac = (mac or "").lower().strip()
+    up_bytes = down_bytes = up_pkts = down_pkts = 0
+    for rule_mac, direction, _h, packets, nbytes in _acct_rules():
+        if rule_mac != mac:
+            continue
+        if direction == "up":
+            up_bytes, up_pkts = nbytes, packets
+        elif direction == "down":
+            down_bytes, down_pkts = nbytes, packets
+    return {
+        "up_bytes": up_bytes,
+        "down_bytes": down_bytes,
+        "bytes": up_bytes + down_bytes,
+        "up_packets": up_pkts,
+        "down_packets": down_pkts,
+    }
+
+
+def session_remaining(mac: str) -> Optional[int]:
+    """Seconds left on a MAC's authorization, or None if not authorized."""
+    mac = (mac or "").lower().strip()
+    res = _run(["nft", "-j", "list", "set", NFT_FAMILY, NFT_TABLE, AUTH_SET])
+    if res.returncode != 0:
+        return None
+    try:
+        data = json.loads(res.stdout or "{}")
+    except json.JSONDecodeError:
+        return None
+    for obj in data.get("nftables", []):
+        st = obj.get("set")
+        if not st:
+            continue
+        for el in st.get("elem") or []:
+            if not isinstance(el, dict):
+                continue
+            val = el.get("elem")
+            if isinstance(val, dict):
+                if str(val.get("val", "")).lower() == mac and "expires" in val:
+                    return int(val["expires"])
+    return None
+
+
+def fmt_bytes(n: int) -> str:
+    step = 1000.0
+    value = float(n)
+    for unit in ("B", "kB", "MB", "GB", "TB"):
+        if value < step or unit == "TB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= step
+    return f"{value:.1f} TB"
+
+
+def fmt_duration(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
 def sync_all_limits() -> int:
     """Re-apply every stored limit. Required after reboot: nft rules are volatile."""
     applied = 0
@@ -238,6 +374,10 @@ def authorize_mac(mac: str, timeout: str = "8h") -> bool:
         ["nft", "add", "element", NFT_FAMILY, NFT_TABLE, AUTH_SET,
          f"{{ {mac} timeout {timeout} }}"]
     )
+    if res.returncode == 0:
+        # Start a fresh per-session byte counter for this device.
+        clear_acct_rules(mac)
+        ensure_acct_rules(mac)
     return res.returncode == 0
 
 
@@ -246,6 +386,8 @@ def deauthorize_mac(mac: str) -> bool:
     if not valid_mac(mac):
         raise ValueError(f"Invalid MAC address: {mac!r}")
     res = _run(["nft", "delete", "element", NFT_FAMILY, NFT_TABLE, AUTH_SET, f"{{ {mac} }}"])
+    # Session over: drop its counters so the next sign-in starts from zero.
+    clear_acct_rules(mac)
     return res.returncode == 0
 
 
