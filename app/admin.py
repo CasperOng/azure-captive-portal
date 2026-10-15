@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 
 import common
 
@@ -161,8 +161,10 @@ ADMIN_CSS = """
 .loginbox{max-width:380px;margin:7vh auto 0}
 .muted{color:rgba(23,32,51,.45)}
 .page-head{display:flex;align-items:center;gap:.75rem}
-.page-head .mark{display:grid;place-items:center;width:42px;height:42px;
-  border-radius:12px;background:var(--brand-ink);color:#fff;font-weight:800;font-size:.85rem}
+.page-head .mark img{width:76%;height:76%;object-fit:contain;display:block}
+.brandmark{display:grid;place-items:center;width:44px;height:44px;border-radius:12px;
+  background:#fff;border:1px solid rgba(23,32,51,.1);overflow:hidden;flex-shrink:0}
+.brandmark img{width:78%;height:78%;object-fit:contain;display:block}
 .overflow{overflow-x:auto}
 .stack-gap{margin-bottom:1.25rem}
 """
@@ -188,7 +190,7 @@ def render_login(warn: str = "") -> str:
     body = f"""
 <div class="loginbox">
   <div class="page-head" style="margin-bottom:1.25rem">
-    <span class="mark">CP</span>
+    <span class="brandmark"><img src="/brand/logo.svg" alt=""></span>
     <div>
       <h1>Captive Portal Admin</h1>
       <div class="sub">Bandwidth &amp; access control</div>
@@ -256,7 +258,7 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
 </div>"""
 
     if not all_macs:
-        rows = ('<tr><td colspan="5" class="muted" style="padding:1.5rem .5rem">'
+        rows = ('<tr><td colspan="7" class="muted" style="padding:1.5rem .5rem">'
                 'No devices yet. They appear here once a client takes a DHCP lease, '
                 'or add one above.</td></tr>')
     else:
@@ -267,6 +269,7 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
             limit = int(dev.get("limit_kbps") or 0)
             is_auth = mac in authorized
             is_enforced = mac in enforced
+            sess = common.session_summary(mac)
 
             auth_badge = ('<span class="badge badge-green">Authorized</span>' if is_auth
                           else '<span class="badge badge-default">Blocked</span>')
@@ -292,6 +295,8 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
   <td class="mono">{esc(mac)}</td>
   <td>{esc(label) or '<span class="muted">&mdash;</span>'}</td>
   <td>{esc(fmt_limit(limit))}<div style="margin-top:.35rem">{lim_badge}</div></td>
+  <td>{esc(sess["connected_human"]) if sess["active"] else '<span class="muted">&mdash;</span>'}</td>
+  <td>{esc(sess["bytes_human"]) if sess["active"] else '<span class="muted">&mdash;</span>'}</td>
   <td>{auth_badge}</td>
   <td>
     <form method="post" action="/devices" class="rowform">
@@ -316,7 +321,7 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
   <h2 class="section-title">Devices</h2>
   <div class="overflow">
     <table>
-      <thead><tr><th>MAC</th><th>Label</th><th>Bandwidth</th><th>Access</th><th>Manage</th></tr></thead>
+      <thead><tr><th>MAC</th><th>Label</th><th>Bandwidth</th><th>Connected</th><th>Used</th><th>Access</th><th>Manage</th></tr></thead>
       <tbody>{rows}</tbody>
     </table>
   </div>
@@ -327,9 +332,12 @@ def render_dashboard(info: str = "", warn: str = "") -> str:
 
     top = """
 <div class="top">
-  <div>
-    <h1>Captive Portal Admin</h1>
-    <div class="sub">Per-user bandwidth and access control</div>
+  <div class="page-head">
+    <span class="brandmark"><img src="/brand/logo.svg" alt=""></span>
+    <div>
+      <h1>Captive Portal Admin</h1>
+      <div class="sub">Example Secondary School</div>
+    </div>
   </div>
   <form method="post" action="/logout">
     <button class="btn btn-secondary btn-sm" type="submit">Sign out</button>
@@ -362,6 +370,14 @@ async def wan_only_middleware(request: Request, call_next):
             status_code=exc.status_code,
         )
     return await call_next(request)
+
+
+@app.get("/brand/{name}")
+async def brand_asset(name: str):
+    path = common.brand_file(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(path, media_type=common.brand_media_type(name))
 
 
 @app.get("/healthz")
