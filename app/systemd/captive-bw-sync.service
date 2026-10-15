@@ -1,0 +1,14 @@
+[Unit]
+Description=Re-apply captive portal bandwidth limits after nftables loads
+After=nftables.service
+Requires=nftables.service
+PartOf=nftables.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/captive-portal
+ExecStart=/opt/captive-portal/venv/bin/python -c "import sys; sys.path.insert(0, '/opt/captive-portal'); import common; common.db_init(); n = common.sync_all_limits(); print(f're-applied {n} bandwidth limit(s)')"
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

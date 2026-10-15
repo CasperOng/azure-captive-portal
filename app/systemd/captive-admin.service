@@ -1,0 +1,17 @@
+[Unit]
+Description=Captive Portal Admin Panel (per-user bandwidth control)
+Documentation=file:/opt/captive-portal/admin.py
+After=network.target nftables.service captive-portal.service
+Wants=nftables.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/captive-portal
+EnvironmentFile=/opt/captive-portal/.env
+Environment=PYTHONPATH=/opt/captive-portal
+ExecStart=/opt/captive-portal/venv/bin/uvicorn admin:app --host 0.0.0.0 --port 3001
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
