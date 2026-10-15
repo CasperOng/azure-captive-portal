@@ -379,6 +379,9 @@ def render_welcome_html(name: str, username: str, ip: str, mac: str, method: str
             <span class="detail-value">{e(sess["down_human"])} / {e(sess["up_human"])}</span>
           </div>
         </div>
+        <form method="post" action="/logout" style="margin-top:1.5rem;width:100%">
+          <button class="btn btn-secondary btn-block" type="submit">Sign out</button>
+        </form>
       </div>
     </main>
     {common.credit_html()}
@@ -466,6 +469,18 @@ async def portal_login_submit(request: Request, email: str = Form(""), password:
             method="Email and password",
         )
     )
+
+
+@app.post("/logout")
+async def portal_logout(request: Request):
+    """Deauthorize this device from the captive portal."""
+    client_ip = request.client.host if request.client else "unknown"
+    mac = get_client_mac(client_ip) or "00:00:00:00:00:00"
+    if common.valid_mac(mac) and mac != "00:00:00:00:00:00":
+        # common.deauthorize_mac also clears this session's accounting counters.
+        common.deauthorize_mac(mac)
+        log_auth_event(client_ip, mac, "-", "-", "LOGOUT")
+    return RedirectResponse(url="/login", status_code=303)
 
 
 @app.get("/auth/login")
