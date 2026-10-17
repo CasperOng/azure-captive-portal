@@ -15,6 +15,9 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import jwt as pyjwt
+from jwt import PyJWKClient
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -38,6 +41,9 @@ def get_config() -> Dict:
         "SESSION_SECRET": common.require_session_secret(os.getenv("SESSION_SECRET")),
         "ADMIN_ALLOW_NET": os.getenv("ADMIN_ALLOW_NET", "192.168.1.0/24"),
         "DEFAULT_BANDWIDTH_KBPS": int(os.getenv("DEFAULT_BANDWIDTH_KBPS", "0") or 0),
+        "ACCESS_TEAM_DOMAIN": os.getenv("ACCESS_TEAM_DOMAIN", "").strip(),
+        "ACCESS_AUD": os.getenv("ACCESS_AUD", "").strip(),
+        "ACCESS_TUNNEL_ORIGIN": os.getenv("ACCESS_TUNNEL_ORIGIN", "192.168.1.60").strip(),
     }
 
 
@@ -75,6 +81,62 @@ def enforce_wan_only(request: Request) -> str:
         if addr.version == net.version and addr in net:
             return ip
     raise HTTPException(status_code=403, detail="Admin panel is restricted to the WAN side (eth0).")
+
+
+# --------------------------------------------------------------------------- #
+# Cloudflare Access (Zero Trust)
+#
+# When the admin is published through the tunnel, cloudflared injects a signed
+# Cf-Access-Jwt-Assertion header once Access has authorised the user. Requests
+# arriving from the tunnel origin must carry a valid one. If Access has not
+# been configured yet they are refused outright, so publishing the hostname
+# can never leave the console exposed.
+# --------------------------------------------------------------------------- #
+_ACCESS_JWKS: Dict[str, PyJWKClient] = {}
+
+
+def _access_jwks(team_domain: str) -> PyJWKClient:
+    url = f"{team_domain.rstrip('/')}/cdn-cgi/access/certs"
+    client = _ACCESS_JWKS.get(url)
+    if client is None:
+        client = PyJWKClient(url, cache_keys=True, lifespan=3600)
+        _ACCESS_JWKS[url] = client
+    return client
+
+
+def verify_access_jwt(token: str, team_domain: str, aud: str) -> Optional[Dict]:
+    if not token:
+        return None
+    try:
+        key = _access_jwks(team_domain).get_signing_key_from_jwt(token)
+        return pyjwt.decode(token, key.key, algorithms=["RS256"], audience=aud)
+    except Exception:
+        return None
+
+
+def enforce_cloudflare_access(request: Request) -> Optional[str]:
+    """Gate tunnel-origin traffic behind a valid Cloudflare Access JWT.
+
+    Returns the Access identity (email) when present, or None for direct
+    LAN/loopback requests that never passed through the tunnel.
+    """
+    cfg = get_config()
+    origin = cfg["ACCESS_TUNNEL_ORIGIN"]
+    if not origin or client_ip(request) != origin:
+        return None  # direct LAN/loopback request: the existing controls apply
+
+    team, aud = cfg["ACCESS_TEAM_DOMAIN"], cfg["ACCESS_AUD"]
+    if not team or not aud:
+        raise HTTPException(
+            status_code=403,
+            detail="Cloudflare Access is not configured for this hostname yet.",
+        )
+    claims = verify_access_jwt(
+        request.headers.get("cf-access-jwt-assertion", ""), team, aud
+    )
+    if not claims:
+        raise HTTPException(status_code=403, detail="Cloudflare Access authorization required.")
+    return claims.get("email") or claims.get("sub")
 
 
 # --------------------------------------------------------------------------- #
@@ -650,6 +712,7 @@ def _startup() -> None:
 async def wan_only_middleware(request: Request, call_next):
     try:
         enforce_wan_only(request)
+        enforce_cloudflare_access(request)
     except HTTPException as exc:
         response = JSONResponse(
             {"detail": exc.detail, "hint": "Admin panel is reachable only from the WAN side (eth0)."},
