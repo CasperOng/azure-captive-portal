@@ -118,13 +118,46 @@ def db_init() -> None:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(users)").fetchall()}
         if "role" not in cols:
             conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'wifi'")
+
+        # Device profiles: a named policy bundle assigned to fixed devices
+        # (whiteboards, public PCs) so they can be provisioned without a
+        # browser sign-in.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS profiles (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                name           TEXT    NOT NULL UNIQUE,
+                description    TEXT    NOT NULL DEFAULT '',
+                bandwidth_kbps INTEGER NOT NULL DEFAULT 0,
+                auto_authorize INTEGER NOT NULL DEFAULT 0,
+                session_hours  INTEGER NOT NULL DEFAULT 8,
+                auth_method    TEXT    NOT NULL DEFAULT 'mac',
+                created_at     TEXT    NOT NULL,
+                updated_at     TEXT    NOT NULL
+            )
+            """
+        )
+        # Migrate devices created before profiles existed.
+        dcols = {row[1] for row in conn.execute("PRAGMA table_info(devices)").fetchall()}
+        for col, decl in (
+            ("profile_id", "INTEGER"),
+            ("auth_method", "TEXT NOT NULL DEFAULT ''"),
+            ("entra_device_id", "TEXT NOT NULL DEFAULT ''"),
+            ("notes", "TEXT NOT NULL DEFAULT ''"),
+            ("enrolled_at", "TEXT"),
+            ("last_seen", "TEXT"),
+        ):
+            if col not in dcols:
+                conn.execute(f"ALTER TABLE devices ADD COLUMN {col} {decl}")
         conn.commit()
 
 
 def list_devices() -> List[Dict]:
     with db_connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM devices ORDER BY label COLLATE NOCASE, mac"
+            "SELECT d.*, p.name AS profile_name, p.auto_authorize AS profile_auto"
+            " FROM devices d LEFT JOIN profiles p ON p.id = d.profile_id"
+            " ORDER BY d.label COLLATE NOCASE, d.mac"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -164,6 +197,131 @@ def delete_device(mac: str) -> None:
     with db_connect() as conn:
         conn.execute("DELETE FROM devices WHERE mac=?", (mac,))
         conn.commit()
+
+
+# --------------------------------------------------------------------------- #
+# Device profiles
+#
+# A profile is a named policy bundle. Assigning one to a fixed device
+# (BenQ whiteboard, public PC) lets it be provisioned without a browser
+# sign-in when auto_authorize is set.
+# --------------------------------------------------------------------------- #
+AUTH_METHODS = ("mac", "psk", "cert", "sso")
+
+
+def list_profiles() -> List[Dict]:
+    with db_connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM profiles ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_profile(profile_id: object) -> Optional[Dict]:
+    try:
+        pid = int(profile_id)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    with db_connect() as conn:
+        row = conn.execute("SELECT * FROM profiles WHERE id=?", (pid,)).fetchone()
+        return dict(row) if row else None
+
+
+def upsert_profile(name: str, description: str = "", bandwidth_kbps: int = UNLIMITED,
+                   auto_authorize: bool = False, session_hours: int = 8,
+                   auth_method: str = "mac") -> Dict:
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("Profile name is required")
+    if auth_method not in AUTH_METHODS:
+        raise ValueError(f"Unknown auth_method: {auth_method!r}")
+    now = _now()
+    with db_connect() as conn:
+        conn.execute(
+            "INSERT INTO profiles (name,description,bandwidth_kbps,auto_authorize,"
+            " session_hours,auth_method,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(name) DO UPDATE SET description=excluded.description,"
+            " bandwidth_kbps=excluded.bandwidth_kbps, auto_authorize=excluded.auto_authorize,"
+            " session_hours=excluded.session_hours, auth_method=excluded.auth_method,"
+            " updated_at=excluded.updated_at",
+            (name, description, max(0, int(bandwidth_kbps or 0)),
+             1 if auto_authorize else 0, max(1, int(session_hours or 8)),
+             auth_method, now, now),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM profiles WHERE name=?", (name,)).fetchone()
+        return dict(row)
+
+
+def delete_profile(profile_id: object) -> None:
+    try:
+        pid = int(profile_id)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return
+    with db_connect() as conn:
+        conn.execute("UPDATE devices SET profile_id=NULL WHERE profile_id=?", (pid,))
+        conn.execute("DELETE FROM profiles WHERE id=?", (pid,))
+        conn.commit()
+
+
+def assign_device_profile(mac: str, profile_id: object) -> None:
+    mac = (mac or "").lower().strip()
+    if not valid_mac(mac):
+        raise ValueError(f"Invalid MAC address: {mac!r}")
+    pid = None
+    if profile_id not in (None, "", "0", 0):
+        prof = get_profile(profile_id)
+        if not prof:
+            raise ValueError("Unknown profile")
+        pid = prof["id"]
+    with db_connect() as conn:
+        conn.execute(
+            "UPDATE devices SET profile_id=?, updated_at=? WHERE mac=?",
+            (pid, _now(), mac),
+        )
+        conn.commit()
+
+
+def devices_for_profile(profile_id: object) -> List[str]:
+    try:
+        pid = int(profile_id)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return []
+    with db_connect() as conn:
+        rows = conn.execute("SELECT mac FROM devices WHERE profile_id=?", (pid,)).fetchall()
+        return [r[0] for r in rows]
+
+
+def sync_static_authorizations() -> int:
+    """Keep provisioned devices online even though nftables state is volatile.
+
+    For every device whose profile sets auto_authorize, re-assert the MAC in
+    authorized_macs with a long lease and enforce the profile's bandwidth.
+    Also drops static access for devices whose profile no longer auto-authorizes.
+    Returns the number of devices kept online.
+    """
+    static_macs = set()
+    kept = 0
+    for dev in list_devices():
+        pid = dev.get("profile_id")
+        if not pid:
+            continue
+        prof = get_profile(pid)
+        if not prof or not int(prof.get("auto_authorize") or 0):
+            continue
+        mac = dev["mac"]
+        static_macs.add(mac)
+        want = int(prof.get("bandwidth_kbps") or 0)
+        if int(dev.get("limit_kbps") or 0) != want:
+            upsert_device(mac, dev.get("label") or "", want)
+            apply_limit(mac, want)
+        # The timer refreshes this well inside the lease, so the profile's
+        # session length governs how long a device stays reachable if sync stops.
+        hours = max(1, int(prof.get("session_hours") or 24))
+        _run(["nft", "add", "element", NFT_FAMILY, NFT_TABLE, AUTH_SET,
+              f"{{ {mac} timeout {hours}h }}"])
+        kept += 1
+    return kept
 
 
 # --------------------------------------------------------------------------- #

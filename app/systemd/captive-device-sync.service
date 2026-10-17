@@ -1,0 +1,9 @@
+[Unit]
+Description=Keep profile-managed devices authorized (whiteboards, public PCs)
+After=nftables.service captive-admin.service
+Wants=nftables.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/captive-portal
+ExecStart=/opt/captive-portal/venv/bin/python -c "import sys; sys.path.insert(0, '/opt/captive-portal'); import common; common.db_init(); n = common.sync_static_authorizations(); print(f'kept {n} device(s) online')"

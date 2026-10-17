@@ -443,6 +443,7 @@ def render_dashboard(info: str = "", warn: str = "", subject: str = "admin") -> 
       <a href="#add">Add device</a>
       <a href="#users">Accounts</a>
       <a href="#devices">Devices</a>
+      <a href="/profiles">Profiles &amp; devices</a>
     </nav>
   </aside>
   <div class="main">
@@ -457,6 +458,156 @@ def render_dashboard(info: str = "", warn: str = "", subject: str = "admin") -> 
     return page("Dashboard", shell, info=info, warn=warn)
 
 
+def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin") -> str:
+    profiles = common.list_profiles()
+    devices = common.list_devices()
+    authorized = set(common.list_authorized_macs())
+
+    form = f"""
+<div class="card" style="margin-bottom:1.25rem">
+  <h2 class="section-title">Create or update a profile</h2>
+  <form method="post" action="/profiles">
+    <div class="grid">
+      <div><label class="label" for="p-name">Name</label>
+        <input class="input" type="text" id="p-name" name="name" placeholder="BenQ Whiteboard" required></div>
+      <div><label class="label" for="p-bw">Bandwidth (kbps, 0 = unlimited)</label>
+        <input class="input" type="number" id="p-bw" name="bandwidth_kbps" min="0" step="1" value="0"></div>
+      <div><label class="label" for="p-hours">Session hours</label>
+        <input class="input" type="number" id="p-hours" name="session_hours" min="1" step="1" value="8"></div>
+      <div><label class="label" for="p-auth">Identity</label>
+        <select class="input" id="p-auth" name="auth_method">
+          <option value="mac">MAC (pre-registered)</option>
+          <option value="psk">Per-device PSK</option>
+          <option value="cert">802.1X certificate</option>
+          <option value="sso">User sign-in (Entra)</option>
+        </select></div>
+      <div><label class="label" for="p-desc">Description</label>
+        <input class="input" type="text" id="p-desc" name="description" placeholder="Fixed displays in classrooms"></div>
+      <div>
+        <label class="ck" style="margin-bottom:.6rem">
+          <input type="checkbox" name="auto_authorize" value="1"> Auto-authorize (no sign-in)
+        </label>
+        <button class="btn btn-primary btn-block" type="submit">Save profile</button>
+      </div>
+    </div>
+  </form>
+  <p class="note" style="text-align:left">Identical names update in place. <strong>Auto-authorize</strong>
+    keeps the device online with no browser sign-in — intended for fixed kit like whiteboards.</p>
+</div>"""
+
+    if profiles:
+        prows = []
+        for p in profiles:
+            count = len(common.devices_for_profile(p["id"]))
+            access = ('<span class="badge badge-green">Auto</span>'
+                      if int(p["auto_authorize"] or 0)
+                      else '<span class="badge badge-default">Sign-in</span>')
+            prows.append(
+                f'<tr><td><strong>{esc(p["name"])}</strong>'
+                f'<div class="muted" style="font-size:.78rem">{esc(p["description"] or "")}</div></td>'
+                f'<td>{esc(fmt_limit(int(p["bandwidth_kbps"] or 0)))}</td>'
+                f'<td>{access}</td>'
+                f'<td>{int(p["session_hours"] or 8)}h</td>'
+                f'<td class="mono">{esc(p["auth_method"])}</td>'
+                f'<td>{count}</td>'
+                f'<td><form method="post" action="/profiles/delete" style="display:inline">'
+                f'<input type="hidden" name="profile_id" value="{p["id"]}">'
+                f'<button class="btn btn-danger btn-sm" type="submit">Delete</button></form></td></tr>'
+            )
+        ptable = "".join(prows)
+    else:
+        ptable = ('<tr><td colspan="7" class="muted" style="padding:1.25rem .5rem">'
+                  'No profiles yet. Create one above &mdash; e.g. "BenQ Whiteboard".</td></tr>')
+
+    if devices:
+        drows = []
+        for d in devices:
+            mac = d["mac"]
+            badge = ('<span class="badge badge-green">Authorized</span>' if mac in authorized
+                     else '<span class="badge badge-default">Blocked</span>')
+            opts = ""
+            for p in profiles:
+                mark = " selected" if d.get("profile_id") == p["id"] else ""
+                opts += f'<option value="{p["id"]}"{mark}>{esc(p["name"])}</option>'
+            drows.append(
+                f'<tr><td class="mono">{esc(mac)}</td>'
+                f'<td>{esc(d.get("label") or "")}</td>'
+                f'<td>{esc(d.get("profile_name") or "&mdash;")}</td>'
+                f'<td>{badge}</td>'
+                f'<td><form method="post" action="/devices/profile" class="rowform">'
+                f'<input type="hidden" name="mac" value="{esc(mac)}">'
+                f'<select class="input" name="profile_id">'
+                f'<option value="">&mdash; none &mdash;</option>{opts}</select>'
+                f'<button class="btn btn-secondary btn-sm" type="submit">Assign</button>'
+                f'</form></td></tr>'
+            )
+        dtable = "".join(drows)
+    else:
+        dtable = ('<tr><td colspan="5" class="muted" style="padding:1.25rem .5rem">'
+                  'No devices known yet. They appear once a client takes a DHCP lease, '
+                  'or add one on the dashboard.</td></tr>')
+
+    top = f"""
+<div class="top">
+  <div class="page-head">
+    <span class="brandmark"><img src="/brand/logo.svg" alt=""></span>
+    <div>
+      <h1>Profiles &amp; devices</h1>
+      <div class="sub">Provision fixed kit &mdash; whiteboards, public PCs</div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:.75rem">
+    <div style="text-align:right">
+      <div style="font-size:.8rem;font-weight:600">{esc(subject)}</div>
+      <div style="font-size:.7rem;color:rgba(23,32,51,.5)">signed in</div>
+    </div>
+    <form method="post" action="/logout">
+      <button class="btn btn-secondary btn-sm" type="submit">Sign out</button>
+    </form>
+  </div>
+</div>"""
+
+    shell = f"""
+<div class="shell">
+  <aside class="side">
+    <div class="brand">
+      <span class="brandmark"><img src="/brand/logo.svg" alt=""></span>
+      <div><div class="nm">Captive Portal</div><div class="rl">Admin console</div></div>
+    </div>
+    <nav>
+      <a href="/">Overview</a>
+      <a href="/profiles" class="on">Profiles &amp; devices</a>
+    </nav>
+  </aside>
+  <div class="main">
+    {top}
+    {form}
+    <div class="card" style="margin-bottom:1.25rem">
+      <h2 class="section-title">Profiles</h2>
+      <div class="overflow">
+        <table>
+          <thead><tr><th>Name</th><th>Bandwidth</th><th>Access</th><th>Session</th><th>Identity</th><th>Devices</th><th></th></tr></thead>
+          <tbody>{ptable}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h2 class="section-title">Devices</h2>
+      <div class="overflow">
+        <table>
+          <thead><tr><th>MAC</th><th>Label</th><th>Profile</th><th>Access</th><th>Assign</th></tr></thead>
+          <tbody>{dtable}</tbody>
+        </table>
+      </div>
+      <p class="note" style="text-align:left">Devices in an <em>Auto</em> profile are kept
+        authorized by <span class="mono">captive-device-sync</span> and need no sign-in.</p>
+    </div>
+  </div>
+</div>"""
+
+    return page("Profiles", shell, info=info, warn=warn)
+
+
 # --------------------------------------------------------------------------- #
 # App
 # --------------------------------------------------------------------------- #
@@ -468,6 +619,8 @@ def _startup() -> None:
     common.db_init()
     # nft rules are volatile: re-apply stored limits whenever the panel starts.
     common.sync_all_limits()
+    # Re-assert access for profile-managed fixed devices (whiteboards, public PCs).
+    common.sync_static_authorizations()
 
 
 @app.middleware("http")
@@ -553,6 +706,53 @@ async def dashboard(request: Request, msg: str = "", err: str = ""):
     if not session_valid(request):
         return RedirectResponse("/login", status_code=303)
     return HTMLResponse(render_dashboard(info=msg, warn=err, subject=session_subject(request)))
+
+
+@app.get("/profiles", response_class=HTMLResponse)
+async def profiles_page(request: Request, msg: str = "", err: str = ""):
+    if not session_valid(request):
+        return RedirectResponse("/login", status_code=303)
+    return HTMLResponse(render_profiles_page(info=msg, warn=err, subject=session_subject(request)))
+
+
+@app.post("/profiles")
+async def save_profile(request: Request, name: str = Form(""), description: str = Form(""),
+                       bandwidth_kbps: int = Form(0), session_hours: int = Form(8),
+                       auth_method: str = Form("mac"), auto_authorize: str = Form("")):
+    if not session_valid(request):
+        return RedirectResponse("/login", status_code=303)
+    try:
+        prof = common.upsert_profile(name, description.strip(), bandwidth_kbps,
+                                     bool(auto_authorize), session_hours, auth_method)
+    except ValueError as exc:
+        return RedirectResponse(f"/profiles?err={esc(str(exc))}", status_code=303)
+    kept = common.sync_static_authorizations()
+    msg = f"Saved profile {prof['name']} — {kept} device(s) kept online"
+    return RedirectResponse(f"/profiles?msg={esc(msg)}", status_code=303)
+
+
+@app.post("/profiles/delete")
+async def delete_profile_route(request: Request, profile_id: str = Form("")):
+    if not session_valid(request):
+        return RedirectResponse("/login", status_code=303)
+    for mac in common.devices_for_profile(profile_id):
+        common.deauthorize_mac(mac)
+    common.delete_profile(profile_id)
+    return RedirectResponse("/profiles?msg=Profile deleted", status_code=303)
+
+
+@app.post("/devices/profile")
+async def assign_profile(request: Request, mac: str = Form(""), profile_id: str = Form("")):
+    if not session_valid(request):
+        return RedirectResponse("/login", status_code=303)
+    try:
+        if not common.get_device(mac):
+            common.upsert_device(mac, "", 0)
+        common.assign_device_profile(mac, profile_id)
+        common.sync_static_authorizations()
+    except ValueError as exc:
+        return RedirectResponse(f"/profiles?err={esc(str(exc))}", status_code=303)
+    return RedirectResponse("/profiles?msg=Profile assigned", status_code=303)
 
 
 @app.post("/devices")

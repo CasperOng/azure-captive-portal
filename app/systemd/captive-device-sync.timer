@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically re-assert provisioned device access
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=captive-device-sync.service
+
+[Install]
+WantedBy=timers.target
