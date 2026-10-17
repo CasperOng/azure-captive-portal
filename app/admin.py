@@ -35,7 +35,7 @@ def get_config() -> Dict:
     load_dotenv(ENV_PATH, override=True)
     return {
         "ADMIN_PASSWORD": os.getenv("ADMIN_PASSWORD", ""),
-        "SESSION_SECRET": os.getenv("SESSION_SECRET", "default-fallback-secret-change-me"),
+        "SESSION_SECRET": common.require_session_secret(os.getenv("SESSION_SECRET")),
         "ADMIN_ALLOW_NET": os.getenv("ADMIN_ALLOW_NET", "192.168.1.0/24"),
         "DEFAULT_BANDWIDTH_KBPS": int(os.getenv("DEFAULT_BANDWIDTH_KBPS", "0") or 0),
     }
@@ -111,7 +111,12 @@ def session_valid(request: Request) -> bool:
     cfg = get_config()
     token = request.cookies.get(COOKIE_NAME, "")
     data = common.verify_payload(token, cfg["SESSION_SECRET"], SESSION_MAX_AGE)
-    return bool(data and data.get("role") == "admin")
+    if not data or data.get("role") != "admin":
+        return False
+    # Bind the session to the address that created it, so a stolen cookie is
+    # useless from anywhere else.
+    bound = data.get("ip")
+    return bool(bound) and bound == client_ip(request)
 
 
 def require_session(request: Request) -> None:
@@ -611,11 +616,29 @@ def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin")
 # --------------------------------------------------------------------------- #
 # App
 # --------------------------------------------------------------------------- #
-app = FastAPI(title="Captive Portal Admin")
+app = FastAPI(
+    title="Captive Portal Admin",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+
+SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Content-Security-Policy": (
+        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; "
+        "form-action 'self'"
+    ),
+}
 
 
 @app.on_event("startup")
 def _startup() -> None:
+    get_config()  # raises if SESSION_SECRET is missing or weak (fail closed)
     common.db_init()
     # nft rules are volatile: re-apply stored limits whenever the panel starts.
     common.sync_all_limits()
@@ -628,11 +651,15 @@ async def wan_only_middleware(request: Request, call_next):
     try:
         enforce_wan_only(request)
     except HTTPException as exc:
-        return JSONResponse(
+        response = JSONResponse(
             {"detail": exc.detail, "hint": "Admin panel is reachable only from the WAN side (eth0)."},
             status_code=exc.status_code,
         )
-    return await call_next(request)
+    else:
+        response = await call_next(request)
+    for header, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    return response
 
 
 @app.get("/brand/{name}")
@@ -690,7 +717,8 @@ async def login_submit(request: Request, password: str = Form(""), email: str = 
         cfg["SESSION_SECRET"],
     )
     resp = RedirectResponse("/", status_code=303)
-    resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="lax", max_age=SESSION_MAX_AGE)
+    resp.set_cookie(COOKIE_NAME, token, httponly=True, samesite="strict",
+                    secure=True, max_age=SESSION_MAX_AGE)
     return resp
 
 
@@ -841,7 +869,9 @@ async def delete_user_route(request: Request, email: str = Form("")):
 
 
 @app.get("/api/devices")
-async def api_devices() -> JSONResponse:
+async def api_devices(request: Request) -> JSONResponse:
+    if not session_valid(request):
+        raise HTTPException(status_code=401, detail="Login required")
     devices = {d["mac"]: d for d in common.list_devices()}
     authorized = set(common.list_authorized_macs())
     enforced = {mac for mac, _ in common.list_bw_rules()}

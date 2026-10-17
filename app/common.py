@@ -63,6 +63,29 @@ MAC_RE = re.compile(r"^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$")
 # Sentinel stored in the DB / returned by the API to mean "no rate limit".
 UNLIMITED = 0
 
+# Placeholder values that must never be accepted as a session-signing key.
+WEAK_SECRETS = frozenset({
+    "default-fallback-secret-change-me",
+    "generate-a-real-32-byte-hex-secret",
+    "changeme", "change-me", "secret", "password",
+})
+
+
+def require_session_secret(raw: Optional[str]) -> str:
+    """Fail closed on a missing or weak SESSION_SECRET.
+
+    Falling back to a known constant would let anyone forge the admin session
+    cookie and the OAuth state parameter, so this raises instead.
+    """
+    secret = (raw or "").strip()
+    if len(secret) < 32 or secret.lower() in WEAK_SECRETS:
+        raise RuntimeError(
+            "SESSION_SECRET is missing, shorter than 32 characters, or a known "
+            'placeholder. Generate one with: python3 -c "import secrets; '
+            'print(secrets.token_hex(32))"'
+        )
+    return secret
+
 
 # --------------------------------------------------------------------------- #
 # Generic helpers
@@ -85,6 +108,13 @@ def _run(args: List[str], timeout: int = 5) -> subprocess.CompletedProcess:
 def db_connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=5)
     conn.row_factory = sqlite3.Row
+    try:
+        # Two processes (portal + admin) write to this database: WAL plus a
+        # busy timeout avoids "database is locked" under concurrent writes.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.Error:
+        pass
     return conn
 
 
@@ -150,6 +180,11 @@ def db_init() -> None:
             if col not in dcols:
                 conn.execute(f"ALTER TABLE devices ADD COLUMN {col} {decl}")
         conn.commit()
+    # The database holds password hashes: keep it owner-only.
+    try:
+        os.chmod(DB_PATH, 0o600)
+    except OSError:
+        pass
 
 
 def list_devices() -> List[Dict]:
@@ -776,6 +811,18 @@ def verify_payload(token: str, secret: str, max_age_seconds: int = 43200) -> Opt
 # --------------------------------------------------------------------------- #
 # Auth audit log
 # --------------------------------------------------------------------------- #
+AUTH_LOG_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _rotate_log(path: Path, max_bytes: int = AUTH_LOG_MAX_BYTES) -> None:
+    """Keep the auth log bounded so a busy portal cannot fill the disk."""
+    try:
+        if path.exists() and path.stat().st_size > max_bytes:
+            path.replace(path.with_suffix(path.suffix + ".1"))
+    except OSError:
+        pass
+
+
 def log_auth_event(ip: str, mac: str, username: str, name: str, method: str) -> None:
     ts = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     entry = (
@@ -783,6 +830,7 @@ def log_auth_event(ip: str, mac: str, username: str, name: str, method: str) -> 
     )
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log(LOG_PATH)
         with open(LOG_PATH, "a", encoding="utf-8") as fh:
             fh.write(entry)
     except Exception:

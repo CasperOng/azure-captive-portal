@@ -6,13 +6,17 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import subprocess
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import httpx
+import jwt as pyjwt
+from jwt import PyJWKClient
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -22,7 +26,39 @@ import common
 ENV_PATH = Path("/opt/captive-portal/.env")
 LOG_PATH = Path("/var/log/captive-auth.log")
 
-app = FastAPI(title="Captive Portal - Microsoft Entra ID (OAuth2)")
+app = FastAPI(
+    title="Captive Portal - Microsoft Entra ID (OAuth2)",
+    # The API schema is not public: it is an attack-surface map.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+
+SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Content-Security-Policy": (
+        "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; "
+        "form-action 'self'"
+    ),
+}
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for header, value in SECURITY_HEADERS.items():
+        response.headers.setdefault(header, value)
+    return response
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    # Fail closed at boot rather than serving with a forgeable secret.
+    get_config()
 
 # Simple in-memory brute-force throttle for the local email/password form.
 _LOGIN_FAILURES: dict = {}
@@ -33,7 +69,15 @@ LOGIN_FAILURE_WINDOW = 300
 def _login_locked(ip: str) -> bool:
     now = time.time()
     fails = [t for t in _LOGIN_FAILURES.get(ip, []) if now - t < LOGIN_FAILURE_WINDOW]
-    _LOGIN_FAILURES[ip] = fails
+    if fails:
+        _LOGIN_FAILURES[ip] = fails
+    else:
+        # Never leave empty entries behind: this dict is keyed by client IP.
+        _LOGIN_FAILURES.pop(ip, None)
+    # Bound the table so a source-address flood cannot exhaust memory.
+    if len(_LOGIN_FAILURES) > 10000:
+        for stale in sorted(_LOGIN_FAILURES, key=lambda k: _LOGIN_FAILURES[k][-1])[:1000]:
+            _LOGIN_FAILURES.pop(stale, None)
     return len(fails) >= MAX_LOGIN_FAILURES
 
 
@@ -48,7 +92,7 @@ def get_config() -> dict:
         "AZURE_TENANT_ID": os.getenv("AZURE_TENANT_ID", ""),
         "AZURE_CLIENT_SECRET": os.getenv("AZURE_CLIENT_SECRET", ""),
         "REDIRECT_URI": os.getenv("REDIRECT_URI", "http://localhost:3000/auth/callback"),
-        "SESSION_SECRET": os.getenv("SESSION_SECRET", "default-fallback-secret-change-me"),
+        "SESSION_SECRET": common.require_session_secret(os.getenv("SESSION_SECRET")),
     }
 
 
@@ -119,16 +163,9 @@ def get_client_mac(ip: str) -> Optional[str]:
 def is_mac_authorized(mac: Optional[str]) -> bool:
     if not mac or not MAC_RE.match(mac):
         return False
-    try:
-        res = subprocess.run(
-            ["nft", "list", "set", "inet", "captive", "authorized_macs"],
-            capture_output=True,
-            text=True,
-            timeout=3,
-        )
-        return mac.lower() in res.stdout.lower()
-    except Exception:
-        return False
+    # Exact membership via the shared parser rather than a substring match on
+    # raw `nft` output, which can false-positive across element boundaries.
+    return common.is_mac_authorized(mac)
 
 
 def authorize_mac(mac: str) -> bool:
@@ -163,14 +200,17 @@ def log_auth_event(ip: str, mac: str, username: str, name: str, method: str) -> 
         pass
 
 
-def sign_state(ip: str, mac: str, secret: str) -> str:
-    payload = json.dumps({"ip": ip, "mac": mac, "ts": int(time.time())}, separators=(",", ":"))
+def sign_state(ip: str, mac: str, secret: str, nonce: str) -> str:
+    payload = json.dumps(
+        {"ip": ip, "mac": mac, "nonce": nonce, "ts": int(time.time())},
+        separators=(",", ":"),
+    )
     b64_payload = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("utf-8").rstrip("=")
     sig = hmac.new(secret.encode("utf-8"), b64_payload.encode("utf-8"), hashlib.sha256).hexdigest()
     return f"{b64_payload}.{sig}"
 
 
-def verify_state(state: str, secret: str) -> Tuple[str, str]:
+def verify_state(state: str, secret: str) -> Dict:
     if "." not in state:
         raise ValueError("Malformed state parameter")
     b64_payload, sig = state.rsplit(".", 1)
@@ -179,22 +219,44 @@ def verify_state(state: str, secret: str) -> Tuple[str, str]:
         raise ValueError("Invalid state signature")
     padding = "=" * (-len(b64_payload) % 4)
     data = json.loads(base64.urlsafe_b64decode(b64_payload + padding).decode("utf-8"))
-    if int(time.time()) - int(data.get("ts", 0)) > 3600:
+    if int(time.time()) - int(data.get("ts", 0)) > 600:
         raise ValueError("State parameter expired")
-    return data.get("ip", ""), data.get("mac", "")
+    return data
 
 
-def decode_jwt_claims(token: str) -> dict:
-    parts = token.split(".")
-    if len(parts) < 2:
-        return {}
-    payload_b64 = parts[1]
-    padding = "=" * (-len(payload_b64) % 4)
-    try:
-        raw = base64.urlsafe_b64decode(payload_b64 + padding)
-        return json.loads(raw.decode("utf-8"))
-    except Exception:
-        return {}
+_JWKS_CLIENTS: Dict[str, PyJWKClient] = {}
+
+
+def _jwks_client(tenant_id: str) -> PyJWKClient:
+    url = f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys"
+    client = _JWKS_CLIENTS.get(url)
+    if client is None:
+        client = PyJWKClient(url, cache_keys=True, lifespan=3600)
+        _JWKS_CLIENTS[url] = client
+    return client
+
+
+def verify_id_token(token: str, tenant_id: str, client_id: str, nonce: str) -> dict:
+    """Verify the Entra ID token's signature and standard claims.
+
+    The payload used to be merely base64-decoded, so any well-formed token was
+    trusted. This checks the RS256 signature against the tenant JWKS and
+    validates issuer, audience, expiry and the per-request nonce.
+    """
+    if not token:
+        raise ValueError("Missing id_token")
+    signing_key = _jwks_client(tenant_id).get_signing_key_from_jwt(token)
+    claims = pyjwt.decode(
+        token,
+        signing_key.key,
+        algorithms=["RS256"],
+        audience=client_id,
+        issuer=f"https://login.microsoftonline.com/{tenant_id}/v2.0",
+        options={"require": ["exp", "iat", "aud", "iss", "nonce"]},
+    )
+    if not nonce or claims.get("nonce") != nonce:
+        raise ValueError("ID token nonce mismatch")
+    return claims
 
 
 def render_login_html(ip: str, mac: str, authorized: bool = False, error: str = "") -> str:
@@ -436,6 +498,19 @@ async def portal_login_submit(request: Request, email: str = Form(""), password:
     client_ip = request.client.host if request.client else "unknown"
     mac = get_client_mac(client_ip) or "00:00:00:00:00:00"
 
+    # Password sign-in is only meaningful from the captive segment: it is the
+    # only place the device MAC can be resolved. Refusing anything else also
+    # stops the portal being used as a remote credential oracle from the LAN.
+    if not on_captive_segment(client_ip):
+        return HTMLResponse(
+            render_login_html(
+                ip=client_ip, mac=mac,
+                error="Email sign-in only works on the captive network. "
+                      "Use Microsoft sign-in when connecting over the internet.",
+            ),
+            status_code=403,
+        )
+
     if _login_locked(client_ip):
         return HTMLResponse(
             render_login_html(
@@ -489,7 +564,8 @@ async def auth_login(request: Request):
     client_ip = request.client.host if request.client else "unknown"
     mac = get_client_mac(client_ip) or "00:00:00:00:00:00"
 
-    state = sign_state(client_ip, mac, cfg["SESSION_SECRET"])
+    nonce = secrets.token_urlsafe(24)
+    state = sign_state(client_ip, mac, cfg["SESSION_SECRET"], nonce)
     tenant_id = cfg["AZURE_TENANT_ID"] or "common"
     params = {
         "client_id": cfg["AZURE_CLIENT_ID"],
@@ -498,6 +574,7 @@ async def auth_login(request: Request):
         "response_mode": "query",
         "scope": "openid profile email",
         "state": state,
+        "nonce": nonce,
     }
     auth_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?{urllib.parse.urlencode(params)}"
     return RedirectResponse(url=auth_url, status_code=302)
@@ -529,10 +606,13 @@ async def auth_callback(
         raise HTTPException(status_code=400, detail="Missing code or state parameter.")
 
     try:
-        state_ip, state_mac = verify_state(state, cfg["SESSION_SECRET"])
+        state_data = verify_state(state, cfg["SESSION_SECRET"])
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    state_ip = state_data.get("ip", "")
+    state_mac = state_data.get("mac", "")
+    state_nonce = state_data.get("nonce", "")
     mac = state_mac if (state_mac and state_mac != "00:00:00:00:00:00") else (get_client_mac(req_ip) or state_mac)
     client_ip = state_ip or req_ip
 
@@ -553,20 +633,47 @@ async def auth_callback(
         )
 
     if resp.status_code != 200:
+        # Do not echo the upstream response body to the browser.
+        log_auth_event(client_ip, mac, "-", "-", f"ENTRA_TOKEN_ERROR:{resp.status_code}")
         return HTMLResponse(
             render_login_html(
                 ip=client_ip,
                 mac=mac,
-                        error=f"Token exchange failed ({resp.status_code}): {resp.text}",
+                error="Sign-in could not be completed. Please try again.",
             ),
             status_code=400,
         )
 
     token_data = resp.json()
     id_token = token_data.get("id_token", "")
-    claims = decode_jwt_claims(id_token)
-    preferred_username = claims.get("preferred_username") or claims.get("email") or claims.get("upn") or "unknown@microsoft"
+    try:
+        claims = verify_id_token(id_token, tenant_id, cfg["AZURE_CLIENT_ID"], state_nonce)
+    except Exception as exc:
+        log_auth_event(client_ip, mac, "-", "-", f"ENTRA_TOKEN_INVALID:{type(exc).__name__}")
+        return HTMLResponse(
+            render_login_html(
+                ip=client_ip, mac=mac,
+                error="Sign-in could not be verified. Please try again.",
+            ),
+            status_code=400,
+        )
+    preferred_username = common.normalise_email(
+        claims.get("preferred_username") or claims.get("email") or claims.get("upn") or ""
+    )
     name = claims.get("name") or preferred_username
+
+    # Only accounts an administrator has provisioned may join. Previously any
+    # account in the tenant was authorised and merely logged.
+    if not preferred_username or not common.get_user(preferred_username):
+        log_auth_event(client_ip, mac, preferred_username or "-", name, "ENTRA_DENIED_NOT_PROVISIONED")
+        return HTMLResponse(
+            render_login_html(
+                ip=client_ip, mac=mac,
+                error="This account is not provisioned for network access. "
+                      "Ask an administrator to add it.",
+            ),
+            status_code=403,
+        )
 
     if not mac or mac == "00:00:00:00:00:00" or not MAC_RE.match(mac):
         raise HTTPException(status_code=400, detail=f"Cannot authorize invalid MAC address: {mac}")
