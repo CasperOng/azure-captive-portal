@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily backup of the captive portal database
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=24h
+Persistent=true
+Unit=captive-db-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=Back up the captive portal database
+After=captive-admin.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/captive-portal/backup-db.sh
