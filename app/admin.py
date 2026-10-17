@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 import ipaddress
 import os
+import re
 import time
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -20,7 +21,8 @@ from jwt import PyJWKClient
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse, Response)
 
 import common
 
@@ -44,6 +46,8 @@ def get_config() -> Dict:
         "ACCESS_TEAM_DOMAIN": os.getenv("ACCESS_TEAM_DOMAIN", "").strip(),
         "ACCESS_AUD": os.getenv("ACCESS_AUD", "").strip(),
         "ACCESS_TUNNEL_ORIGIN": os.getenv("ACCESS_TUNNEL_ORIGIN", "192.168.1.60").strip(),
+        "WIFI_SSID": os.getenv("WIFI_SSID", "").strip(),
+        "WIFI_PASSPHRASE": os.getenv("WIFI_PASSPHRASE", "").strip(),
     }
 
 
@@ -525,41 +529,102 @@ def render_dashboard(info: str = "", warn: str = "", subject: str = "admin") -> 
     return page("Dashboard", shell, info=info, warn=warn)
 
 
-def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin") -> str:
+def _profile_bundle(prof: Dict, cfg: Dict) -> str:
+    """Human-readable provisioning sheet for one device profile."""
+    ssid = cfg.get("WIFI_SSID") or ""
+    psk = cfg.get("WIFI_PASSPHRASE") or ""
+    limit = int(prof.get("bandwidth_kbps") or 0)
+    net = ssid or "<SSID>"
+    return "\n".join([
+        "Captive Portal — Device Profile",
+        "=" * 44,
+        f"Profile        : {prof['name']}",
+        f"Description    : {prof.get('description') or '-'}",
+        f"Bandwidth      : {fmt_limit(limit)}",
+        f"Session        : {int(prof.get('session_hours') or 8)} hour(s)",
+        f"Identity       : {prof.get('auth_method')}",
+        f"Auto-authorize : {'yes' if int(prof.get('auto_authorize') or 0) else 'no'}",
+        "",
+        "Wi-Fi",
+        "-" * 44,
+        f"SSID           : {ssid or '(not set — add WIFI_SSID to .env)'}",
+        "Security       : WPA2/WPA3-Personal",
+        f"Passphrase     : {psk or '(not set — add WIFI_PASSPHRASE to .env)'}",
+        "",
+        "Connecting",
+        "-" * 44,
+        f"Windows        : Settings > Network & Internet > Wi-Fi > {net}",
+        f"Android / BenQ : Settings > Network > Wi-Fi > {net}",
+        f"macOS / iOS    : Wi-Fi > {net}",
+        "",
+        "After joining, open http://10.50.0.1:3000 and sign in — unless this",
+        "profile auto-authorizes the device, in which case it is already online.",
+        "",
+    ])
+
+
+def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin",
+                         edit_id: object = None) -> str:
     profiles = common.list_profiles()
-    devices = common.list_devices()
     authorized = set(common.list_authorized_macs())
+
+    # Devices come from two places: the store, and any MAC currently authorized.
+    # A device that signed in but was never labelled still needs a row here, or
+    # it cannot be given a profile at all.
+    merged = {d["mac"]: dict(d) for d in common.list_devices()}
+    for mac in authorized:
+        merged.setdefault(mac, {"mac": mac, "label": "", "profile_id": None,
+                                "profile_name": None})
+    devices = sorted(merged.values(),
+                     key=lambda d: ((d.get("label") or "").lower(), d["mac"]))
+
+    edit = common.get_profile(edit_id) if edit_id else None
+    name_val = esc(edit["name"]) if edit else ""
+    bw_val = int(edit["bandwidth_kbps"] or 0) if edit else 0
+    hours_val = int(edit["session_hours"] or 8) if edit else 8
+    desc_val = esc(edit["description"] or "") if edit else ""
+    auth_val = edit["auth_method"] if edit else "mac"
+    auto_checked = " checked" if edit and int(edit["auto_authorize"] or 0) else ""
+    auth_options = "".join(
+        f'<option value="{m}"{" selected" if m == auth_val else ""}>{label}</option>'
+        for m, label in (("mac", "MAC (pre-registered)"), ("psk", "Per-device PSK"),
+                         ("cert", "802.1X certificate"), ("sso", "User sign-in (Entra)"))
+    )
+    heading = f"Edit profile: {esc(edit['name'])}" if edit else "Create or update a profile"
+    cancel = ('<a class="btn btn-secondary btn-block" href="/profiles"'
+              ' style="margin-top:.5rem">Cancel</a>') if edit else ""
 
     form = f"""
 <div class="card" style="margin-bottom:1.25rem">
-  <h2 class="section-title">Create or update a profile</h2>
+  <h2 class="section-title">{heading}</h2>
   <form method="post" action="/profiles">
     <div class="grid">
       <div><label class="label" for="p-name">Name</label>
-        <input class="input" type="text" id="p-name" name="name" placeholder="BenQ Whiteboard" required></div>
+        <input class="input" type="text" id="p-name" name="name" placeholder="BenQ Whiteboard"
+               value="{name_val}"{' readonly' if edit else ''} required></div>
       <div><label class="label" for="p-bw">Bandwidth (kbps, 0 = unlimited)</label>
-        <input class="input" type="number" id="p-bw" name="bandwidth_kbps" min="0" step="1" value="0"></div>
+        <input class="input" type="number" id="p-bw" name="bandwidth_kbps" min="0" step="1" value="{bw_val}"></div>
       <div><label class="label" for="p-hours">Session hours</label>
-        <input class="input" type="number" id="p-hours" name="session_hours" min="1" step="1" value="8"></div>
+        <input class="input" type="number" id="p-hours" name="session_hours" min="1" step="1" value="{hours_val}"></div>
       <div><label class="label" for="p-auth">Identity</label>
         <select class="input" id="p-auth" name="auth_method">
-          <option value="mac">MAC (pre-registered)</option>
-          <option value="psk">Per-device PSK</option>
-          <option value="cert">802.1X certificate</option>
-          <option value="sso">User sign-in (Entra)</option>
+          {auth_options}
         </select></div>
       <div><label class="label" for="p-desc">Description</label>
-        <input class="input" type="text" id="p-desc" name="description" placeholder="Fixed displays in classrooms"></div>
+        <input class="input" type="text" id="p-desc" name="description"
+               placeholder="Fixed displays in classrooms" value="{desc_val}"></div>
       <div>
         <label class="ck" style="margin-bottom:.6rem">
-          <input type="checkbox" name="auto_authorize" value="1"> Auto-authorize (no sign-in)
+          <input type="checkbox" name="auto_authorize" value="1"{auto_checked}> Auto-authorize (no sign-in)
         </label>
         <button class="btn btn-primary btn-block" type="submit">Save profile</button>
+        {cancel}
       </div>
     </div>
   </form>
-  <p class="note" style="text-align:left">Identical names update in place. <strong>Auto-authorize</strong>
-    keeps the device online with no browser sign-in — intended for fixed kit like whiteboards.</p>
+  <p class="note" style="text-align:left"><strong>Auto-authorize</strong> keeps the device online with
+    no browser sign-in — intended for fixed kit like whiteboards. The bandwidth applies as soon as a
+    device is assigned, whether or not auto-authorize is on.</p>
 </div>"""
 
     if profiles:
@@ -577,9 +642,13 @@ def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin")
                 f'<td>{int(p["session_hours"] or 8)}h</td>'
                 f'<td class="mono">{esc(p["auth_method"])}</td>'
                 f'<td>{count}</td>'
-                f'<td><form method="post" action="/profiles/delete" style="display:inline">'
+                f'<td><div class="actions">'
+                f'<a class="btn btn-secondary btn-sm" href="/profiles?edit={p["id"]}">Edit</a>'
+                f'<a class="btn btn-secondary btn-sm" href="/profiles/{p["id"]}/download">Download</a>'
+                f'<form method="post" action="/profiles/delete" style="display:inline">'
                 f'<input type="hidden" name="profile_id" value="{p["id"]}">'
-                f'<button class="btn btn-danger btn-sm" type="submit">Delete</button></form></td></tr>'
+                f'<button class="btn btn-danger btn-sm" type="submit">Delete</button></form>'
+                f'</div></td></tr>'
             )
         ptable = "".join(prows)
     else:
@@ -805,10 +874,27 @@ async def dashboard(request: Request, msg: str = "", err: str = ""):
 
 
 @app.get("/profiles", response_class=HTMLResponse)
-async def profiles_page(request: Request, msg: str = "", err: str = ""):
+async def profiles_page(request: Request, msg: str = "", err: str = "", edit: str = ""):
     if not session_valid(request):
         return RedirectResponse("/login", status_code=303)
-    return HTMLResponse(render_profiles_page(info=msg, warn=err, subject=session_subject(request)))
+    return HTMLResponse(render_profiles_page(info=msg, warn=err,
+                                             subject=session_subject(request),
+                                             edit_id=edit or None))
+
+
+@app.get("/profiles/{profile_id}/download")
+async def download_profile(request: Request, profile_id: int):
+    if not session_valid(request):
+        return RedirectResponse("/login", status_code=303)
+    prof = common.get_profile(profile_id)
+    if not prof:
+        raise HTTPException(status_code=404, detail="No such profile")
+    fname = re.sub(r"[^A-Za-z0-9._-]+", "-", str(prof["name"])).strip("-").lower() or "profile"
+    return Response(
+        content=_profile_bundle(prof, get_config()),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}.txt"'},
+    )
 
 
 @app.post("/profiles")

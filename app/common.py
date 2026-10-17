@@ -315,6 +315,15 @@ def assign_device_profile(mac: str, profile_id: object) -> None:
             (pid, _now(), mac),
         )
         conn.commit()
+    # Apply the profile's bandwidth straight away. Previously this only happened
+    # for auto-authorize profiles, so assigning a bandwidth-limited profile to a
+    # device did nothing at all.
+    if pid is not None:
+        prof = get_profile(pid) or {}
+        limit = int(prof.get("bandwidth_kbps") or 0)
+        label = (get_device(mac) or {}).get("label") or ""
+        upsert_device(mac, label, limit)
+        apply_limit(mac, limit)
 
 
 def devices_for_profile(profile_id: object) -> List[str]:
