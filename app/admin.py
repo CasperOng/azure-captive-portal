@@ -714,10 +714,16 @@ async def wan_only_middleware(request: Request, call_next):
         enforce_wan_only(request)
         enforce_cloudflare_access(request)
     except HTTPException as exc:
-        response = JSONResponse(
-            {"detail": exc.detail, "hint": "Admin panel is reachable only from the WAN side (eth0)."},
-            status_code=exc.status_code,
-        )
+        text = str(exc.detail)
+        payload: Dict[str, str] = {"detail": exc.detail}
+        if "WAN side" in text:
+            payload["hint"] = "The admin panel is reachable only from the WAN side (eth0)."
+        elif "Access" in text:
+            payload["hint"] = (
+                "This console is published through the Cloudflare tunnel and must be "
+                "fronted by a Cloudflare Access application for this hostname."
+            )
+        response = JSONResponse(payload, status_code=exc.status_code)
     else:
         response = await call_next(request)
     for header, value in SECURITY_HEADERS.items():
