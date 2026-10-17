@@ -620,7 +620,6 @@ def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin")
     <span class="brandmark"><img src="/brand/logo.svg" alt=""></span>
     <div>
       <h1>Profiles &amp; devices</h1>
-      <div class="sub">Provision fixed kit &mdash; whiteboards, public PCs</div>
     </div>
   </div>
   <div style="display:flex;align-items:center;gap:.75rem">
