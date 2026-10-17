@@ -30,6 +30,7 @@ echo "[*] Enabling services..."
 pct exec "$CTID" -- bash -c "
   systemctl daemon-reload
   systemctl enable captive-admin.service captive-bw-sync.service >/dev/null 2>&1
+  systemctl enable --now captive-device-sync.timer captive-db-backup.timer >/dev/null 2>&1
   systemctl restart captive-bw-sync.service
   systemctl restart captive-admin.service
   systemctl restart captive-portal.service
@@ -38,8 +39,8 @@ sleep 3
 
 echo
 echo "==================== STATUS ===================="
-pct exec "$CTID" -- systemctl is-active nftables dnsmasq captive-portal.service captive-admin.service captive-bw-sync.service
+pct exec "$CTID" -- systemctl is-active nftables dnsmasq captive-portal.service captive-admin.service captive-bw-sync.service captive-device-sync.timer captive-db-backup.timer
 echo "--- enabled ---"
-pct exec "$CTID" -- systemctl is-enabled captive-portal.service captive-admin.service captive-bw-sync.service
+pct exec "$CTID" -- systemctl is-enabled captive-portal.service captive-admin.service captive-bw-sync.service captive-device-sync.timer captive-db-backup.timer
 echo
 echo "PASSWORD=${ADMIN_PASS}"
