@@ -149,3 +149,54 @@ identity and audit attribution (`preferred_username` is logged unverified).
 
 > Findings are reported with `file:line`, the affected principal, and the smallest effective
 > fix, per the repository's rules of engagement. No source was modified as part of this audit.
+
+---
+
+# Remediation status (2026-10-17)
+
+Hardening pass applied and verified against the live gateway.
+
+## Fixed
+
+| Finding | Fix |
+|---|---|
+| **C1** fail-open secret | `common.require_session_secret()` — both apps refuse to start on a missing/short/placeholder secret. Verified: empty, `short`, and the old placeholder are all refused. |
+| **C2** cleartext admin | Admin now serves HTTPS only (self-signed, SAN `192.168.1.10`), plaintext returns no listener. Cookie is `Secure; HttpOnly; SameSite=strict`. |
+| **C3** cleartext portal creds | Wireless client isolation (`ap_isolate=1`) — clients can no longer sniff each other. Uplink to the gateway still works. |
+| **C5** unvalidated ID token | `verify_id_token()` — RS256 signature against the tenant JWKS, plus `iss`/`aud`/`exp`/`iat`/`nonce`. Verified: a token forged with a *real* key id is rejected with `InvalidSignatureError`. |
+| **H1** open tenant SSO | SSO now requires a provisioned `users` row; unprovisioned accounts get 403. |
+| **H2** public API schema | `docs_url`/`redoc_url`/`openapi_url` disabled — all three now 404. |
+| **H3** unauth device inventory | `GET /api/devices` requires a session — 401 without one. |
+| **H4** no dependency manifest | `requirements.txt` with pinned versions. |
+| **H5** dangerous example defaults | `.env.example` now ships `DEMO_BYPASS_MODE=false` and a blank admin password. |
+| **M1** no security headers | CSP, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`, `Permissions-Policy` on both apps. |
+| **M2** world-readable DB | `portal.db` is `600` (enforced in `db_init`). |
+| **M3** throttle memory leak | Empty entries reaped; table bounded at 10k. |
+| **M4** session not IP-bound | Admin session is bound to the peer address; `X-Forwarded-For` is ignored. |
+| **M5** error leakage | Upstream token errors are logged, not echoed; generic message to the browser. |
+| **M6** long-lived state | OAuth `state` window cut from 1h to 10 min, plus a per-request nonce. |
+| **M7** substring MAC match | `is_mac_authorized` now uses exact membership parsing. |
+| **S1** volatile authorization | `captive-device-sync` timer re-asserts provisioned devices every 5 min. |
+| **S3** no backups | `captive-db-backup` timer + online SQLite backup API, 14 kept, `600`. |
+| **S5** unbounded auth log | 5 MiB rotation. |
+| **S6** SQLite locking | WAL + 5s busy timeout. |
+
+## Partially addressed
+
+- **H6** portal on the LAN: a LAN/WAN source can no longer *use* it for password sign-in (403),
+  but the port stays reachable from eth0 because the Cloudflare tunnel must reach it for OAuth.
+
+## Still open
+
+| Finding | Note |
+|---|---|
+| **C4** MAC trust | Deferred deliberately. Needs per-device PSK or 802.1X, which changes hostapd on the host. Note the new `auth_method` column is the hook for it. |
+| **S2** single container SPOF | Unchanged. |
+| **S4** host NIC flaps | Hardware; unchanged. |
+| **S7** no monitoring | `/healthz` only. |
+
+## Revised score
+
+Remaining severity ≈ 20 → **~80/100 (Good)**, up from ~0 raw. The transport and secrets
+findings are closed; the outstanding work is architectural (**C4**) rather than a misconfiguration.
+
