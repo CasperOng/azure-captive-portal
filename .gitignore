@@ -29,3 +29,9 @@ CREDENTIALS.local.md
 *.bak.*
 *.removed.*
 .DS_Store
+
+# ---------------------------------------------------------------
+# Tooling local state (Cloudflare CLI cache, etc.)
+# ---------------------------------------------------------------
+.cloudflare/
+.wrangler/
