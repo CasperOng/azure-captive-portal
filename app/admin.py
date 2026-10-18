@@ -215,18 +215,41 @@ def esc(value: object) -> str:
     return html.escape(str(value if value is not None else ""))
 
 
+# One nav for every console page, so the sidebar never changes shape between
+# the dashboard and the profiles page.
+NAV_ITEMS = [
+    ("/", "Overview", "overview"),
+    ("/#add", "Add device", "add"),
+    ("/#users", "Accounts", "users"),
+    ("/#devices", "Devices", "devices"),
+    ("/profiles", "Profiles", "profiles"),
+]
+
+
+def admin_nav(active: str = "overview") -> str:
+    on = ' class="on"'
+    links = "".join(
+        f'<a href="{href}"{on if key == active else ""}>{label}</a>'
+        for href, label, key in NAV_ITEMS
+    )
+    return f"<nav>{links}</nav>"
+
+
 ADMIN_CSS = """
+/* the console uses the full content width, not the portal's narrow .wrap */
+.wrap{max-width:1440px;padding:1.75rem 1.5rem}
 .top{display:flex;justify-content:space-between;align-items:center;gap:1rem;
   flex-wrap:wrap;margin-bottom:1.5rem}
-.top h1{font-size:1.5rem;font-weight:700}
+.top h1{font-size:1.5rem;font-weight:700;letter-spacing:-.035em}
 .top .sub{margin-top:.15rem;font-size:.875rem;color:rgba(23,32,51,.55)}
-.stats{display:flex;gap:.75rem;flex-wrap:wrap;margin-bottom:1.25rem}
-.stat{flex:1 1 150px;background:#fff;border:1px solid rgba(23,32,51,.1);
-  border-radius:14px;padding:.9rem 1.1rem;box-shadow:var(--shadow-panel)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
+  gap:.75rem;margin-bottom:1.25rem}
+.stat{background:#fff;border:1px solid rgba(23,32,51,.1);
+  border-radius:16px;padding:.9rem 1.1rem;box-shadow:var(--shadow-panel)}
 .stat .k{font-size:.7rem;font-weight:700;text-transform:uppercase;
   letter-spacing:.12em;color:rgba(23,32,51,.5)}
 .stat .v{margin-top:.3rem;font-size:1.5rem;font-weight:700;letter-spacing:-.03em}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
   gap:1rem;align-items:end}
 .section-title{font-size:1.05rem;font-weight:700;margin-bottom:1rem}
 .rowform{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap}
@@ -241,30 +264,62 @@ ADMIN_CSS = """
 .loginbox{max-width:380px;margin:7vh auto 0}
 .muted{color:rgba(23,32,51,.45)}
 .page-head{display:flex;align-items:center;gap:.75rem}
-.page-head .mark img{width:76%;height:76%;object-fit:contain;display:block}
 .brandmark{display:grid;place-items:center;width:44px;height:44px;border-radius:12px;
   background:#fff;border:1px solid rgba(23,32,51,.1);overflow:hidden;flex-shrink:0}
 .brandmark img{width:78%;height:78%;object-fit:contain;display:block}
 /* ---- app shell ---- */
-.shell{display:flex;gap:1.5rem;align-items:flex-start}
-.side{flex:0 0 200px;position:sticky;top:1.5rem;background:#fff;
-  border:1px solid rgba(23,32,51,.1);border-radius:14px;padding:1rem;
+.shell{display:flex;gap:1.5rem;align-items:stretch}
+.side{flex:0 0 220px;align-self:flex-start;position:sticky;top:1.5rem;background:#fff;
+  border:1px solid rgba(23,32,51,.1);border-radius:16px;padding:1rem;
   box-shadow:var(--shadow-panel)}
 .side .brand{display:flex;align-items:center;gap:.6rem;padding-bottom:.9rem;
   margin-bottom:.9rem;border-bottom:1px solid rgba(23,32,51,.08)}
 .side .brand .nm{font-weight:700;font-size:.9rem;letter-spacing:-.02em;line-height:1.2}
 .side .brand .rl{font-size:.7rem;color:rgba(23,32,51,.5)}
 .side nav{display:flex;flex-direction:column;gap:.15rem}
-.side nav a{display:block;padding:.5rem .65rem;border-radius:9px;font-size:.875rem;
-  font-weight:600;color:rgba(23,32,51,.7);text-decoration:none}
+.side nav a{display:flex;align-items:center;min-height:40px;padding:.4rem .65rem;
+  border-radius:10px;font-size:.875rem;font-weight:600;
+  color:rgba(23,32,51,.7);text-decoration:none}
 .side nav a:hover{background:var(--paper);color:var(--ink)}
 .side nav a.on{background:var(--mint);color:var(--brand-ink)}
-.main{flex:1;min-width:0}
-@media (max-width:820px){.shell{flex-direction:column}
-  .side{position:static;flex:none;width:100%}
-  .side nav{flex-direction:row;flex-wrap:wrap}}
+.main{flex:1;min-width:0;width:100%}
 .overflow{overflow-x:auto}
 .stack-gap{margin-bottom:1.25rem}
+/* ---- mobile: stack, and turn the sidebar into a bottom tab bar ---- */
+@media (max-width:820px){
+  .wrap{padding:1.25rem 1rem 5.5rem}
+  .shell{flex-direction:column;align-items:stretch;gap:1rem}
+  .main{width:100%}
+  .side{position:fixed;left:0;right:0;bottom:0;top:auto;z-index:20;width:auto;
+    border-radius:0;border-left:0;border-right:0;border-bottom:0;
+    padding:.4rem .5rem;box-shadow:0 -1px 3px rgba(23,32,51,.06)}
+  .side .brand{display:none}
+  .side nav{flex-direction:row;gap:.15rem;overflow-x:auto;justify-content:space-between}
+  .side nav a{min-height:48px;padding:.5rem .4rem;white-space:nowrap;font-size:.72rem}
+  .top{margin-bottom:1rem}
+  .top h1{font-size:1.25rem}
+  .stat .v{font-size:1.35rem}
+  /* tables become stacked cards rather than a horizontally clipped grid */
+  .overflow{overflow-x:visible}
+  thead{display:none}
+  table{width:100%}
+  tbody tr{display:block;background:#fff;border:1px solid rgba(23,32,51,.1);
+    border-radius:12px;padding:.35rem .15rem;margin-bottom:.75rem}
+  tbody tr:last-child{margin-bottom:0}
+  tbody td{display:flex;justify-content:space-between;align-items:center;gap:1rem;
+    border:0;padding:.4rem .75rem;text-align:right}
+  tbody td::before{content:attr(data-label);flex:0 0 auto;font-size:.68rem;font-weight:700;
+    text-transform:uppercase;letter-spacing:.12em;color:rgba(23,32,51,.45);text-align:left}
+  tbody td[data-label=""]::before{display:none}
+  tbody td:last-child{border-top:1px solid rgba(23,32,51,.06);margin-top:.25rem;padding-top:.6rem}
+  /* empty-state rows are not cards */
+  tbody tr:has(td[colspan]){border:0;background:transparent;padding:0}
+  tbody td[colspan]{display:block;text-align:center}
+  tbody td[colspan]::before{display:none}
+  .rowform{justify-content:flex-end}
+  .rowform .input{width:100%}
+  .actions{justify-content:flex-end}
+}
 """
 
 
@@ -344,7 +399,7 @@ def render_dashboard(info: str = "", warn: str = "", subject: str = "admin") -> 
         <input class="input" type="text" id="label" name="label" placeholder="Student laptop">
       </div>
       <div>
-        <label class="label" for="limit_kbps">Download = Upload (kbps)</label>
+        <label class="label" for="limit_kbps">Bandwidth (kbps)</label>
         <input class="input" type="number" id="limit_kbps" name="limit_kbps" min="0" step="1" value="0">
       </div>
       <div>
@@ -355,8 +410,7 @@ def render_dashboard(info: str = "", warn: str = "", subject: str = "admin") -> 
       </div>
     </div>
   </form>
-  <p class="note" style="text-align:left">The single value applies to <strong>both</strong> download
-    and upload. Tick <em>Unlimited</em> (or set 0) to remove the limit. 1000 kbps = 1 Mbit/s.</p>
+  <p class="note" style="text-align:left">Applies to both directions. 0 or Unlimited removes it.</p>
 </div>"""
 
     users = common.list_users()
@@ -367,11 +421,11 @@ def render_dashboard(info: str = "", warn: str = "", subject: str = "admin") -> 
                           if u.get("role") == "admin"
                           else '<span class="badge badge-default">wifi</span>')
             parts.append(
-                f'<tr><td class="mono">{esc(u["email"])}</td>'
-                f'<td>{esc(u.get("label") or "")}</td>'
-                f'<td>{role_badge}</td>'
-                f'<td>{esc(u.get("last_login_at") or "&mdash;")}</td>'
-                f'<td><form method="post" action="/users/delete" style="display:inline">'
+                f'<tr><td class="mono" data-label="Email">{esc(u["email"])}</td>'
+                f'<td data-label="Label">{esc(u.get("label") or "")}</td>'
+                f'<td data-label="Role">{role_badge}</td>'
+                f'<td data-label="Last sign-in">{esc(u.get("last_login_at") or "&mdash;")}</td>'
+                f'<td data-label=""><form method="post" action="/users/delete" style="display:inline">'
                 f'<input type="hidden" name="email" value="{esc(u["email"])}">'
                 f'<button class="btn btn-danger btn-sm" type="submit">Delete</button></form></td></tr>'
             )
@@ -399,8 +453,7 @@ def render_dashboard(info: str = "", warn: str = "", subject: str = "admin") -> 
       <div><button class="btn btn-primary btn-block" type="submit">Save account</button></div>
     </div>
   </form>
-  <p class="note" style="text-align:left">Saving an email that already exists resets its
-    password and role. Wi-Fi users sign in to the captive portal; console admins sign in here.</p>
+  <p class="note" style="text-align:left">Re-saving an email resets its password and role.</p>
   <div class="overflow" style="margin-top:1rem">
     <table>
       <thead><tr><th>Email</th><th>Label</th><th>Role</th><th>Last sign-in</th><th></th></tr></thead>
@@ -444,13 +497,13 @@ def render_dashboard(info: str = "", warn: str = "", subject: str = "admin") -> 
 
             rows += f"""
 <tr>
-  <td class="mono">{esc(mac)}</td>
-  <td>{esc(label) or '<span class="muted">&mdash;</span>'}</td>
-  <td>{esc(fmt_limit(limit))}<div style="margin-top:.35rem">{lim_badge}</div></td>
-  <td>{esc(sess["connected_human"]) if sess["active"] else '<span class="muted">&mdash;</span>'}</td>
-  <td>{esc(sess["bytes_human"]) if sess["active"] else '<span class="muted">&mdash;</span>'}</td>
-  <td>{auth_badge}</td>
-  <td>
+  <td class="mono" data-label="MAC">{esc(mac)}</td>
+  <td data-label="Label">{esc(label) or '<span class="muted">&mdash;</span>'}</td>
+  <td data-label="Bandwidth">{esc(fmt_limit(limit))}<div style="margin-top:.35rem">{lim_badge}</div></td>
+  <td data-label="Connected">{esc(sess["connected_human"]) if sess["active"] else '<span class="muted">&mdash;</span>'}</td>
+  <td data-label="Used">{esc(sess["bytes_human"]) if sess["active"] else '<span class="muted">&mdash;</span>'}</td>
+  <td data-label="Access">{auth_badge}</td>
+  <td data-label="">
     <form method="post" action="/devices" class="rowform">
       <input type="hidden" name="mac" value="{esc(mac)}">
       <input class="input" type="text" name="label" value="{esc(label)}" placeholder="Label">
@@ -477,15 +530,12 @@ def render_dashboard(info: str = "", warn: str = "", subject: str = "admin") -> 
       <tbody>{rows}</tbody>
     </table>
   </div>
-  <p class="note" style="text-align:left">"Revoke" removes the device from
-    <span class="mono">authorized_macs</span> (it must sign in again). "Delete" also removes the
-    stored label and limit.</p>
+  <p class="note" style="text-align:left">Revoke forces the device to sign in again.</p>
 </div>"""
 
     top = f"""
 <div class="top">
   <div class="page-head">
-    <span class="brandmark"><img src="/brand/logo.svg" alt=""></span>
     <div>
       <h1>Captive Portal Admin</h1>
       <div class="sub">Example Secondary School</div>
@@ -509,13 +559,7 @@ def render_dashboard(info: str = "", warn: str = "", subject: str = "admin") -> 
       <span class="brandmark"><img src="/brand/logo.svg" alt=""></span>
       <div><div class="nm">Captive Portal</div><div class="rl">Admin console</div></div>
     </div>
-    <nav>
-      <a href="#overview" class="on">Overview</a>
-      <a href="#add">Add device</a>
-      <a href="#users">Accounts</a>
-      <a href="#devices">Devices</a>
-      <a href="/profiles">Profiles &amp; devices</a>
-    </nav>
+    {admin_nav("overview")}
   </aside>
   <div class="main">
     {top}
@@ -602,7 +646,7 @@ def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin",
       <div><label class="label" for="p-name">Name</label>
         <input class="input" type="text" id="p-name" name="name" placeholder="BenQ Whiteboard"
                value="{name_val}"{' readonly' if edit else ''} required></div>
-      <div><label class="label" for="p-bw">Bandwidth (kbps, 0 = unlimited)</label>
+      <div><label class="label" for="p-bw">Bandwidth (kbps)</label>
         <input class="input" type="number" id="p-bw" name="bandwidth_kbps" min="0" step="1" value="{bw_val}"></div>
       <div><label class="label" for="p-hours">Session hours</label>
         <input class="input" type="number" id="p-hours" name="session_hours" min="1" step="1" value="{hours_val}"></div>
@@ -622,9 +666,7 @@ def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin",
       </div>
     </div>
   </form>
-  <p class="note" style="text-align:left"><strong>Auto-authorize</strong> keeps the device online with
-    no browser sign-in — intended for fixed kit like whiteboards. The bandwidth applies as soon as a
-    device is assigned, whether or not auto-authorize is on.</p>
+  <p class="note" style="text-align:left">Auto-authorize keeps the device online without a sign-in.</p>
 </div>"""
 
     if profiles:
@@ -635,14 +677,14 @@ def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin",
                       if int(p["auto_authorize"] or 0)
                       else '<span class="badge badge-default">Sign-in</span>')
             prows.append(
-                f'<tr><td><strong>{esc(p["name"])}</strong>'
+                f'<tr><td data-label="Name"><strong>{esc(p["name"])}</strong>'
                 f'<div class="muted" style="font-size:.78rem">{esc(p["description"] or "")}</div></td>'
-                f'<td>{esc(fmt_limit(int(p["bandwidth_kbps"] or 0)))}</td>'
-                f'<td>{access}</td>'
-                f'<td>{int(p["session_hours"] or 8)}h</td>'
-                f'<td class="mono">{esc(p["auth_method"])}</td>'
-                f'<td>{count}</td>'
-                f'<td><div class="actions">'
+                f'<td data-label="Bandwidth">{esc(fmt_limit(int(p["bandwidth_kbps"] or 0)))}</td>'
+                f'<td data-label="Access">{access}</td>'
+                f'<td data-label="Session">{int(p["session_hours"] or 8)}h</td>'
+                f'<td class="mono" data-label="Identity">{esc(p["auth_method"])}</td>'
+                f'<td data-label="Devices">{count}</td>'
+                f'<td data-label=""><div class="actions">'
                 f'<a class="btn btn-secondary btn-sm" href="/profiles?edit={p["id"]}">Edit</a>'
                 f'<a class="btn btn-secondary btn-sm" href="/profiles/{p["id"]}/download">Download</a>'
                 f'<form method="post" action="/profiles/delete" style="display:inline">'
@@ -666,11 +708,11 @@ def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin",
                 mark = " selected" if d.get("profile_id") == p["id"] else ""
                 opts += f'<option value="{p["id"]}"{mark}>{esc(p["name"])}</option>'
             drows.append(
-                f'<tr><td class="mono">{esc(mac)}</td>'
-                f'<td>{esc(d.get("label") or "")}</td>'
-                f'<td>{esc(d.get("profile_name") or "&mdash;")}</td>'
-                f'<td>{badge}</td>'
-                f'<td><form method="post" action="/devices/profile" class="rowform">'
+                f'<tr><td class="mono" data-label="MAC">{esc(mac)}</td>'
+                f'<td data-label="Label">{esc(d.get("label") or "")}</td>'
+                f'<td data-label="Profile">{esc(d.get("profile_name") or "&mdash;")}</td>'
+                f'<td data-label="Access">{badge}</td>'
+                f'<td data-label="Assign"><form method="post" action="/devices/profile" class="rowform">'
                 f'<input type="hidden" name="mac" value="{esc(mac)}">'
                 f'<select class="input" name="profile_id">'
                 f'<option value="">&mdash; none &mdash;</option>{opts}</select>'
@@ -686,7 +728,6 @@ def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin",
     top = f"""
 <div class="top">
   <div class="page-head">
-    <span class="brandmark"><img src="/brand/logo.svg" alt=""></span>
     <div>
       <h1>Profiles &amp; devices</h1>
     </div>
@@ -709,10 +750,7 @@ def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin",
       <span class="brandmark"><img src="/brand/logo.svg" alt=""></span>
       <div><div class="nm">Captive Portal</div><div class="rl">Admin console</div></div>
     </div>
-    <nav>
-      <a href="/">Overview</a>
-      <a href="/profiles" class="on">Profiles &amp; devices</a>
-    </nav>
+    {admin_nav("profiles")}
   </aside>
   <div class="main">
     {top}
@@ -734,8 +772,7 @@ def render_profiles_page(info: str = "", warn: str = "", subject: str = "admin",
           <tbody>{dtable}</tbody>
         </table>
       </div>
-      <p class="note" style="text-align:left">Devices in an <em>Auto</em> profile are kept
-        authorized by <span class="mono">captive-device-sync</span> and need no sign-in.</p>
+      <p class="note" style="text-align:left">Devices in an <em>Auto</em> profile stay online without a sign-in.</p>
     </div>
   </div>
 </div>"""
