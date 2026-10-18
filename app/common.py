@@ -1058,7 +1058,7 @@ def credit_html(compact: bool = False) -> str:
     {signature_svg()}
     <span class="stack">
       <span class="credit-line">Developed by Casper Ong</span>
-      <span>With the help of OpenAI Codex</span>
+      <span>With the help of opencode</span>
     </span>
   </a>
 </footer>"""
