@@ -1,352 +1,166 @@
-# Captive Portal Gateway
+# Entra ID Captive Portal
 
-A self-contained captive portal for an isolated Wi-Fi segment, running as a
-privileged Debian 12 LXC container on Proxmox VE. Unauthenticated clients are
-intercepted and forced through a sign-in page — **email + password**, or
-**Microsoft Entra ID SSO** — after which their device MAC is authorized in
-`nftables` for 8 hours. A separate admin console provides per-device bandwidth
-limiting, account management and provisioning of fixed devices.
+**A self-hosted captive portal that authorises devices by MAC after an OIDC sign-in — no 802.1X, no RADIUS, no controller.**
 
-The access point is hosted **directly on the Proxmox host** (`hostapd` on the
-internal PCIe Wi-Fi card) and confined to an isolated bridge, so the captive
-segment shares no layer-2 path with the household LAN.
+[![License: MIT](https://img.shields.io/badge/license-MIT-1f7a4e.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](app/requirements.txt)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.143-009688?logo=fastapi&logoColor=white)](app/requirements.txt)
+[![Platform](https://img.shields.io/badge/platform-Proxmox%20LXC%20%C2%B7%20Debian%2012-E57000?logo=proxmox&logoColor=white)](#deployment)
+[![Status](https://img.shields.io/badge/status-proof%20of%20concept-d99a26)](#limitations)
+[![Security](https://img.shields.io/badge/security-reviewed%20%C2%B7%2027%20findings-1f7a4e)](security/AUDIT.md)
+
+> **Status: proof of concept.** This is a working research build, not a product. It was written to answer a specific question — *can a usable captive portal be built with nothing but a Linux host, `nftables` and an OIDC provider?* — and the answer is "yes, with one structural caveat". Read [Limitations](#limitations) before deploying it anywhere real.
 
 ---
 
-## 1. Architecture
+## The problem
+
+A small network needs guest Wi-Fi with per-device accountability: who is online, for how long, at what speed. The textbook answer is 802.1X with RADIUS and per-user certificates. That needs a CA, a supplicant on every client, and a RADIUS server — infrastructure that is disproportionate for a dozen devices and impossible for a smart TV or a whiteboard.
+
+This project takes the cheaper route: a **captive portal** that intercepts unauthenticated HTTP, makes the user sign in through an OIDC provider, and then allow-lists the device's **MAC address** in the kernel firewall for a fixed lease.
+
+That trade is the whole point of the PoC — and its central weakness.
+
+---
+
+## Design
 
 ```
-        Wi-Fi clients (SSID: Casper-SSO, WPA2/WPA3-Personal)
+        Wi-Fi clients (SSID, WPA2/WPA3-Personal)
                      │
                      │  802.11, client isolation ON (ap_isolate)
                      ▼
         ┌────────────────────────────────────────┐
-        │  Proxmox host  (pve-prod-1)            │
-        │                                        │
-        │  wlp1s0  ── hostapd (AP mode)          │
-        │     │                                  │
+        │  Proxmox host                          │
+        │  wlp1s0 ── hostapd (AP mode)           │
         │     └── enslaved to ──► vmbr50         │  isolated bridge,
-        │                          │             │  NO uplink to vmbr0
-        │                          │             │
+        │                          │             │  NO uplink
         │              veth150i1 ──┘             │
         └──────────────────────────┬─────────────┘
                                    │
    ┌───────────────────────────────┼──────────────────────────────────┐
-   │  CT 150  "oauth-core"  (Debian 12, privileged, nesting=1)        │
-   │                                                                  │
-   │   eth1  10.50.0.1/24  ◄── captive gateway (vmbr50)               │
-   │    ├── dnsmasq      :53 / :67   DHCP + DNS + RFC 8910 Option 114 │
-   │    ├── nftables     DNAT 80►3000, forward-drop, masquerade       │
-   │    ├── FastAPI      :3000       captive portal (HTTP, captive)   │
-   │    └── FastAPI      :3001       admin console (HTTPS, WAN only)  │
-   │                                                                  │
-   │   eth0  192.168.1.10/24 (dhcp) ── WAN / OAuth2 backchannel    │
-   └───────────────────────────────┬──────────────────────────────────┘
-                                   │
-                            vmbr0 / household LAN
-                            192.168.1.0/24 ──► internet
-
-   CT 115  cloudflared  ──► Cloudflare Tunnel ──► portal.example.com   (portal)
-                                               └─► admin.example.com (console,
-                                                   behind Cloudflare Access)
+   │  CT 150  (Debian, privileged)                                    │
+   │   eth1  10.50.0.1/24  ◄── captive gateway                       │
+   │    ├── dnsmasq   :53/:67   DHCP + DNS + RFC 8910 Option 114     │
+   │    ├── nftables  DNAT 80►3000, default-drop forward, masquerade │
+   │    ├── FastAPI   :3000     captive portal (HTTP, captive net)   │
+   │    └── FastAPI   :3001     admin console (HTTPS, WAN side only) │
+   │   eth0  192.168.1.10/24 ── WAN / OIDC backchannel               │
+   └──────────────────────────────────────────────────────────────────┘
 ```
 
-### Network layout
-
-| Interface | Bridge | Address | Role |
-|---|---|---|---|
-| `wlp1s0` (host) | `vmbr50` | — | AP radio, `hostapd` |
-| CT 150 `eth1` | `vmbr50` | `10.50.0.1/24` | Captive gateway (DHCP/DNS/HTTP) |
-| CT 150 `eth0` | `vmbr0` | `192.168.1.10/24` (DHCP) | WAN + Entra ID token exchange |
-
-`vmbr50` has exactly two members — the radio and the container's `eth1` — and no
-uplink. The only route off the captive segment is through CT 150, which enforces
-the `nftables` policy.
-
-### DHCP / captive-portal discovery
-
-`dnsmasq` serves `10.50.0.50–10.50.0.250/24` with an 8-hour lease, advertising
-gateway and DNS as `10.50.0.1`, plus:
-
-- **RFC 8910 Option 114** → `http://10.50.0.1:3000/api/capport`.
-- **RFC 8908 API** → `/api/capport` returns `{"captive": false}` for authorized
-  MACs, otherwise `{"captive": true, "user-portal-url": ...}`.
-- OS probe endpoints (`/generate_204`, `/hotspot-detect.html`, `/connecttest.txt`,
-  `/ncsi.txt`) return the login page.
-
-Unauthenticated HTTP is DNAT'd to the portal, so macOS/Windows/Android probes land
-on the sign-in page regardless of which OS endpoint they use.
-
-### Authentication flows
-
-**Email + password (primary).** `POST /login` verifies against the `users` table
-(PBKDF2-SHA256, 200k rounds, per-user salt), then runs
-`nft add element inet captive authorized_macs { <MAC> timeout 8h }`. Refused
-outside the captive segment, where the device MAC cannot be resolved.
-
-**Microsoft Entra ID SSO (secondary).** `/auth/login` builds the Entra v2
-authorize URL with an **HMAC-signed `state`** carrying the client IP, MAC and a
-per-request `nonce`. `/auth/callback` verifies the state signature, exchanges the
-code for an ID token over `eth0`, **verifies that token's RS256 signature against
-the tenant JWKS** plus `iss`/`aud`/`exp`/`iat`/`nonce`, requires the email to
-already exist as an account, and then authorizes the MAC. Because the MAC rides
-inside the signed state, the flow still works when the callback arrives through
-the Cloudflare tunnel.
-
-Sign-in is throttled after 6 failures per source address within 5 minutes.
-
-### Walled garden
-
-Devices that are not yet authorized must still reach the SSO infrastructure.
-`dnsmasq`'s `nftset=` directive watches lookups for the relevant domains and
-dynamically inserts the resolved IPs into the `walled_garden_ips` `nftables` set
-(1h timeout), which the forward chain permits:
-
-```
-login.microsoftonline.com  login.live.com  aadcdn.msftauth.net  aadcdn.msauth.net
-msftauth.net  msauth.net  graph.microsoft.com  portal.example.com
-```
+The captive segment is a bridge with exactly two members — the radio and the container's second interface — and no uplink. The only route off the segment is through the container, which enforces the policy.
 
 ---
 
-## 2. Repository layout
+## How a device gets online
 
-```
-app/                        FastAPI applications -> /opt/captive-portal
-  main.py                     captive portal + Entra ID OAuth2
-  common.py                   shared: SQLite store, nftables control, HMAC signing
-  admin.py                    admin console (bandwidth, accounts, profiles)
-  .env.example                template -> .env  (real .env is gitignored)
-  requirements.txt            pinned runtime dependencies
-  systemd/
-    captive-portal.service      portal on :3000
-    captive-admin.service       console on :3001 (TLS)
-    captive-bw-sync.service     re-applies limits after nftables (re)loads
-    captive-device-sync.*       keeps auto-authorize devices online (5 min timer)
-    captive-db-backup.*         daily database backup (14 kept)
-config/
-  nftables.conf               -> /etc/nftables.conf            (CT 150)
-  dnsmasq-captive.conf        -> /etc/dnsmasq.d/captive.conf   (CT 150)
-  hostapd.conf                -> /etc/hostapd/hostapd.conf     (host)
-  vmbr50                      -> /etc/network/interfaces.d/vmbr50 (host)
-scripts/
-  install-panel.sh            install/refresh the console in CT 150
-  finish-panel.sh             idempotent finish + credential setup
-  backup-db.sh                online SQLite backup, rotation
-  repoint-ap.sh               point hostapd + CT 150 eth1 at vmbr50
-  persist-vmbr50.sh           persist vmbr50 across reboots, clean leftovers
-security/AUDIT.md             security & stability audit + remediation status
-```
+1. Client takes a DHCP lease. Any HTTP request is DNAT'd to the portal.
+2. The portal renders a sign-in page showing the detected IP and MAC.
+3. The user signs in — **email + password** (PBKDF2-SHA256, 200k rounds) or **OIDC**.
+4. On success the server runs:
+
+   ```bash
+   nft add element inet captive authorized_macs { <MAC> timeout 8h }
+   ```
+
+5. The forward chain now accepts that MAC's traffic; accounting counters start; an optional bandwidth limit is installed.
+
+Three details make this work in practice:
+
+**The MAC travels inside the OIDC `state`.** A callback arrives over the public hostname, so the request's source address is the tunnel, not the device. The signed `state` carries IP + MAC + nonce, so the right device is authorised regardless.
+
+**The walled garden is DNS-driven.** Unauthenticated clients may only reach the SSO endpoints. `dnsmasq` watches lookups for those domains and inserts the resolved IPs into an `nftables` set with a one-hour timeout, so the allow-list stays current without hardcoding addresses.
+
+**Plain HTTP is enough for the probe.** Redirecting port 80 catches every OS captive probe — macOS, Windows, Android — without allowing the probe destination through, which is what would otherwise make the OS think it is online.
 
 ---
 
-## 3. Deployment
+## What the investigation found
 
-All commands run **as root on the Proxmox host** (`pve-prod-1`).
+The interesting part of this build was not the happy path. A full security review is in [`security/AUDIT.md`](security/AUDIT.md); the findings that changed the design:
 
-### 3.1 Host-side bridge (persist across reboots)
+| Finding | Consequence |
+|---|---|
+| A fail-open `SESSION_SECRET` fallback | One missing env var would have signed admin cookies and OAuth `state` with a **publicly known constant**. Now both apps refuse to start. |
+| The ID token was base64-decoded, never verified | Any well-formed token was trusted. Now RS256 against the tenant JWKS, plus `iss`/`aud`/`exp`/`nonce`. |
+| The admin console spoke plaintext HTTP | Password and session cookie crossed the LAN in the clear. Now TLS-only with a `Secure`, IP-bound cookie. |
+| The portal login posted credentials over the air | Mitigated by WPA2/WPA3 plus `ap_isolate=1`, so clients cannot sniff each other. |
+| **MAC is the entire trust boundary** | Any client can clone an authorised MAC. This is inherent and cannot be fixed inside the portal — see below. |
+| Firewall state is volatile | A reboot silently deauthorised every provisioned device. A timer now re-asserts them every five minutes. |
+
+Two of these were found by testing, not by reading: the OAuth callback was authorising the **tunnel's** MAC instead of the client's, and a `:` in an `nftables` comment was silently corrupting MAC addresses.
+
+---
+
+## Limitations
+
+**MAC authorisation is spoofable.** This is the honest, central caveat. A MAC address is not a secret; anyone who can join the SSID can impersonate an authorised device. Everything else in this project is hardening around that fact. The real fix is per-device PSK (hostapd `wpa_psk_file`) or 802.1X — which is the infrastructure this PoC set out to avoid. The `auth_method` column exists to make that migration possible.
+
+**Other known limits:**
+
+- The captive portal serves HTTP on the captive segment. TLS there means certificate warnings or a custom CA on every client.
+- Single container is a single point of failure for portal, admin, DHCP and NAT.
+- `nft limit` is a token bucket, not `tc` shaping — fine for fairness, not byte-accurate.
+- The admin console is protected by a password and, when published, Cloudflare Access. It is not hardened for multi-tenant use.
+
+---
+
+## Deployment
+
+Runs on a Proxmox host with an isolated bridge and one privileged Debian container.
 
 ```bash
-install -m 644 config/vmbr50 /etc/network/interfaces.d/vmbr50
-ifreload -a
-ip link show master vmbr50          # expect: wlp1s0 + veth150i1
-```
-
-### 3.2 Access point
-
-```bash
-install -m 644 config/hostapd.conf /etc/hostapd/hostapd.conf
-# then set a real wpa_passphrase in that file
+# 1. isolated bridge + AP
+install -m 644 config/vmbr50 /etc/network/interfaces.d/vmbr50 && ifreload -a
+install -m 644 config/hostapd.conf /etc/hostapd/hostapd.conf   # set a real passphrase
 systemctl restart hostapd
-iw dev wlp1s0 info | grep -E 'ssid|type'
-```
 
-### 3.3 Container (CT 150)
-
-```bash
-pct create 150 local:vztmpl/debian-12-standard_12.12-1_amd64.tar.zst \
-  --hostname oauth-core --cores 2 --memory 1024 --swap 512 \
-  --rootfs local:8 --unprivileged 0 --features nesting=1 --onboot 1 \
+# 2. container
+pct create 150 local:vztmpl/debian-12-standard_*.tar.zst \
+  --hostname captive --cores 2 --memory 1024 --unprivileged 0 --features nesting=1 \
   --net0 name=eth0,bridge=vmbr0,ip=dhcp \
   --net1 name=eth1,bridge=vmbr50,ip=10.50.0.1/24
-pct start 150
 
-pct exec 150 -- bash -c '
-  printf "net.ipv4.ip_forward=1\n" > /etc/sysctl.d/99-captive.conf
-  sysctl --system
-  apt-get update
-  apt-get install -y --no-install-recommends \
-    dnsmasq nftables python3 python3-venv python3-pip curl iproute2 ca-certificates openssl
-  python3 -m venv /opt/captive-portal/venv
-'
+# 3. application
+pct exec 150 -- apt-get install -y dnsmasq nftables python3 python3-venv openssl
+pct exec 150 -- python3 -m venv /opt/captive-portal/venv
+# copy app/, config/, install requirements.txt, then:
+bash scripts/install-panel.sh
 ```
 
-### 3.4 Gateway services
+Configuration lives in `.env` (see [`app/.env.example`](app/.env.example)): OIDC client credentials, a 32+ character `SESSION_SECRET`, an admin bootstrap password, and optional Cloudflare Access settings. Both applications **fail closed** if the secret is missing or weak.
 
-Copy the application in, then install dependencies, TLS and units:
-
-```bash
-for f in main.py common.py admin.py requirements.txt; do
-  pct push 150 app/$f /opt/captive-portal/$f --perms 644
-done
-pct push 150 config/nftables.conf        /etc/nftables.conf           --perms 644
-pct push 150 config/dnsmasq-captive.conf /etc/dnsmasq.d/captive.conf  --perms 644
-for u in app/systemd/*; do
-  pct push 150 "$u" "/etc/systemd/system/$(basename "$u")" --perms 644
-done
-pct push 150 scripts/backup-db.sh /opt/captive-portal/backup-db.sh --perms 755
-
-pct exec 150 -- /opt/captive-portal/venv/bin/pip install -r /opt/captive-portal/requirements.txt
-pct exec 150 -- bash -c 'mkdir -p /opt/captive-portal/tls && cd /opt/captive-portal/tls &&
-  openssl req -x509 -newkey rsa:2048 -nodes -keyout admin.key -out admin.crt \
-    -days 825 -subj "/CN=captive-admin" \
-    -addext "subjectAltName=IP:192.168.1.10,IP:127.0.0.1,DNS:localhost" &&
-  chmod 600 admin.key'
-
-pct exec 150 -- bash -c '
-  systemctl daemon-reload
-  systemctl enable --now nftables dnsmasq
-  systemctl enable --now captive-portal.service captive-admin.service captive-bw-sync.service
-  systemctl enable --now captive-device-sync.timer captive-db-backup.timer
-'
-```
-
-`scripts/install-panel.sh` automates the above on an existing container.
-
-### 3.5 Credentials
-
-```bash
-cp app/.env.example /tmp/portal.env    # then edit, or:
-pct exec 150 -- nano /opt/captive-portal/.env
-pct exec 150 -- chmod 600 /opt/captive-portal/.env
-pct exec 150 -- systemctl restart captive-portal.service captive-admin.service
-```
-
-Set `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_CLIENT_SECRET`, and a
-`SESSION_SECRET` of **at least 32 characters**. Both apps refuse to start
-otherwise — the secret signs the admin session cookie and the OAuth `state`, so a
-weak or missing value must never silently degrade to a known constant.
+`scripts/install-panel.sh` installs the units, generates the admin TLS certificate, and enables the portal, admin console, bandwidth re-sync, device re-assertion and database backup timers.
 
 ---
 
-## 4. Admin console
+## Admin console
 
-| | |
-|---|---|
-| LAN | `https://192.168.1.10:3001` (self-signed certificate) |
-| External | `https://admin.example.com` (Cloudflare Access in front) |
+HTTPS on `:3001`, WAN-side only, blocked from the captive VLAN in both `nftables` and the application.
 
-Bound to the **WAN side only** — blocked at `nftables`
-(`iifname "eth1" tcp dport 3001 drop`) and in the app (source IP must match
-`ADMIN_ALLOW_NET`). Login is throttled after 5 failures, and the session cookie is
-`Secure`, `HttpOnly`, `SameSite=strict` and bound to the peer address.
+- **Accounts** — email + password, role `wifi` or `admin`, keyed on email so a later OIDC identity can link by verified address.
+- **Devices** — live list, per-device bandwidth (one value, both directions, `0` = unlimited), revoke, delete.
+- **Profiles** — provision fixed kit (displays, public PCs) with a bandwidth, a session length and an auto-authorise flag, so they stay online without a browser sign-in.
+- **Download** — a per-profile provisioning sheet with the SSID, passphrase and per-OS steps.
 
-When published through the tunnel, requests arriving from the tunnel origin must
-carry a valid **Cloudflare Access JWT**; the app verifies the signature itself.
-Until `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are set, such requests are refused
-outright, so publishing the hostname can never leave the console exposed.
-
-**Accounts** — email + password with a role of `wifi` or `admin`. Admins sign
-into the console; both roles can sign into the captive portal. The shared
-`ADMIN_PASSWORD` remains as a bootstrap (leave the email field blank) so you
-cannot be locked out before the first admin account exists.
-
-**Bandwidth control** — one limit per device, applied to **both** directions:
-
-- `0 kbps` / ticking **Unlimited** removes the limit entirely.
-- Any other value installs two rules in the `bandwidth_limits` chain, e.g. for
-  5000 kbps (= 625 kbytes/s each way):
-
-```
-ether saddr aa:bb:cc:dd:ee:ff limit rate over 625 kbytes/second drop comment "bw:aa:bb:cc:dd:ee:ff"
-ether daddr aa:bb:cc:dd:ee:ff limit rate over 625 kbytes/second drop comment "bw:aa:bb:cc:dd:ee:ff"
-```
-
-The chain hooks `forward` at **priority -10**, so shaping drops happen *before*
-the forward chain accepts the packet. Labels and limits live in SQLite; rules are
-volatile and re-applied on boot by `captive-bw-sync.service`.
-
-> Note: `nft limit` is a per-rule token bucket, not `tc`/HTB shaping. It is
-> effective for keeping the segment fair but is not a byte-accurate shaper.
+When published through a tunnel, the app verifies the Cloudflare Access JWT itself rather than trusting the edge alone.
 
 ---
 
-## 5. Device profiles
+## Layout
 
-The **Profiles & devices** page provisions fixed kit — whiteboards, public PCs —
-without a browser sign-in. A profile carries a bandwidth limit, a session length,
-an identity method (`mac`/`psk`/`cert`/`sso`) and an **Auto-authorize** flag.
-
-Devices assigned to an auto-authorize profile are re-asserted in
-`authorized_macs` every 5 minutes by `captive-device-sync.timer`. Because
-`nftables` state is volatile, this also means they survive a container reboot or
-ruleset reload instead of silently dropping off.
-
-Identity is currently **MAC-based**, which is spoofable by anyone who knows the
-Wi-Fi passphrase. The `auth_method` column is the hook for moving these devices
-to per-device PSK or 802.1X.
-
----
-
-## 6. Operations
-
-```bash
-# Watch successful logins
-pct exec 150 -- tail -f /var/log/captive-auth.log
-
-# Currently authorized devices
-pct exec 150 -- nft list set inet captive authorized_macs
-
-# Dynamically permitted SSO endpoints
-pct exec 150 -- nft list set inet captive walled_garden_ips
-
-# Active bandwidth rules
-pct exec 150 -- nft list chain inet captive bandwidth_limits
-
-# Service health
-pct exec 150 -- systemctl status captive-portal.service captive-admin.service
-pct exec 150 -- systemctl list-timers 'captive-*'
-
-# Backups
-pct exec 150 -- ls -l /var/backups/captive-portal/
-pct exec 150 -- /opt/captive-portal/backup-db.sh      # run one now
-
-# Re-apply stored limits manually
-pct exec 150 -- systemctl restart captive-bw-sync.service
+```
+app/            FastAPI portal + admin console, shared helpers, systemd units
+config/         nftables, dnsmasq, hostapd, bridge definition
+scripts/        install / finish / AP control / DB backup
+security/       security review and remediation status
 ```
 
-### Troubleshooting
-
-| Symptom | Check |
-|---|---|
-| No captive popup | `nft list chain inet captive prerouting` — DNAT 80→3000 present? |
-| Client reaches household LAN | `ip link show master vmbr50` — must list **only** `wlp1s0` + `veth150i1` |
-| No DHCP lease | `pct exec 150 -- ss -ulpn \| grep :67` — dnsmasq bound to `%eth1` |
-| SSO page fails to load | walled garden: `nft list set inet captive walled_garden_ips` non-empty? |
-| Admin console 403 | Cloudflare Access not configured, or no valid Access JWT |
-| Service won't start | `SESSION_SECRET` missing or < 32 chars (fails closed by design) |
-| Host vanishes briefly | Intel I226-V (`igc`) link flap; `dmesg -T \| grep "NIC Link"` |
-
 ---
 
-## 7. Security notes
+## Licence
 
-- Secrets live in `/opt/captive-portal/.env` (`chmod 600`) and are **gitignored**.
-  Only `.env.example` is tracked.
-- `SESSION_SECRET` is **fail-closed**: both apps refuse to start on a missing,
-  short or placeholder value.
-- The SSID uses **WPA2/WPA3-Personal** with **client isolation** (`ap_isolate=1`),
-  so associated clients cannot sniff or attack one another.
-- The captive segment is isolated at layer 2; `vmbr50` has no path to `vmbr0`.
-- The admin console is HTTPS-only, never exposed to the captive segment, and
-  fronted by Cloudflare Access when published externally.
-- Entra ID tokens are signature-verified against the tenant JWKS, and SSO
-  requires an account that an administrator has provisioned.
-- The OAuth `state` is HMAC-signed, single-window (10 minutes) and carries a
-  `nonce`; `/auth/callback` will not authorize an arbitrary device.
-- Both apps send CSP, `X-Frame-Options: DENY`, `X-Content-Type-Options`,
-  `Referrer-Policy` and `Permissions-Policy`; the API schema is not published.
-- `portal.db` is mode 600, runs in WAL mode, and is backed up daily.
+MIT — see [LICENSE](LICENSE). The code is yours to run, fork and learn from.
 
-See `security/AUDIT.md` for the full audit, what was remediated, and what remains
-(the MAC trust model, the single-container SPOF, host NIC flaps, monitoring).
+If you deploy this, the MAC-spoofing limitation is yours to solve. It is documented here precisely so nobody ships it believing it is 802.1X.
